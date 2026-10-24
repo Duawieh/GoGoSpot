@@ -209,6 +209,7 @@ function normalize(t) {
     startedAt: Number.isFinite(Number(src.startedAt)) && Number(src.startedAt) > 0
       ? Number(src.startedAt)
       : 0,
+    pinned: !!src.pinned,
     // 没有截止时间的重复永远等不到下一期，导入的旧数据也按这条规矩清掉
     repeat: due && REPEATS.some((r) => r.key === src.repeat) ? src.repeat : '',
     createdAt: src.createdAt || new Date().toISOString(),
@@ -325,6 +326,18 @@ async function loadTasks() {
 
 /* ---------------------------------------------------------------- 渲染 */
 
+// 和悬浮清单共用一套排序：先看置顶，再看截止时间，没截止的垫底；
+// 完全相同的保持原来的先后（sort 是稳定的）
+function byPinThenDue(a, b) {
+  if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+  const da = parseDue(a.due);
+  const db = parseDue(b.due);
+  const ta = da ? da.getTime() : Infinity;
+  const tb = db ? db.getTime() : Infinity;
+  if (ta === tb) return 0;
+  return ta - tb;
+}
+
 function visibleTasks() {
   let arr = state.tasks.slice();
   const today = todayStr();
@@ -348,7 +361,7 @@ function visibleTasks() {
   if (state.view === 'done') {
     arr.sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
   } else {
-    const pending = arr.filter((t) => !t.done);
+    const pending = arr.filter((t) => !t.done).sort(byPinThenDue);
     const done = arr.filter((t) => t.done)
       .sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
     arr = pending.concat(done);
@@ -450,7 +463,7 @@ function taskHTML(t) {
     : '';
 
   return `
-    <li class="task${t.done ? ' done' : ''}${urgCls}${t.startedAt ? ' is-running' : ''}" data-id="${id}" draggable="true">
+    <li class="task${t.done ? ' done' : ''}${urgCls}${t.startedAt ? ' is-running' : ''}" data-id="${id}">
       ${progressBar(t)}
       <button class="check" data-check="${id}" aria-label="标记完成">
         <svg viewBox="0 0 24 24"><path d="M4.5 12.5l5 5L19.5 7"/></svg>
@@ -459,6 +472,16 @@ function taskHTML(t) {
         <div class="task-head">${title}${linkBtn}</div>
         <div class="task-meta">${meta.join('')}</div>
       </div>
+      <button class="task-pin${t.pinned ? ' is-on' : ''}" data-pin="${id}"
+              aria-pressed="${t.pinned ? 'true' : 'false'}"
+              aria-label="${t.pinned ? '取消置顶' : '置顶'}"
+              title="${t.pinned ? '取消置顶' : '置顶'}">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round">
+          <path d="M12 17v5"/>
+          <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+        </svg>
+      </button>
       ${startButton(t)}
       <button class="task-rename" data-edit="${id}" aria-label="改名" title="改名">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none">
@@ -872,6 +895,15 @@ async function toggleDone(id) {
   render();
 }
 
+// 置顶只改一个字段，跟着整份保存走，和改名、改标签是同一条路
+function togglePin(id) {
+  const t = state.tasks.find((x) => x.id === id);
+  if (!t) return;
+  t.pinned = !t.pinned;
+  render();
+  scheduleSave();
+}
+
 function deleteTask(id) {
   const idx = state.tasks.findIndex((x) => x.id === id);
   if (idx < 0) return;
@@ -934,32 +966,6 @@ function commitEdit(input) {
     scheduleSave();
   }
   render();
-}
-
-/* ---------------------------------------------------------------- 拖拽排序 */
-
-function getDragAfterElement(container, y) {
-  const els = [...container.querySelectorAll('.task:not(.dragging)')];
-  let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
-  for (const child of els) {
-    const box = child.getBoundingClientRect();
-    const offset = y - box.top - box.height / 2;
-    if (offset < 0 && offset > closest.offset) closest = { offset, element: child };
-  }
-  return closest.element;
-}
-
-function syncOrderFromDOM() {
-  const ids = [...el.list.querySelectorAll('.task')].map((n) => n.dataset.id);
-  if (!ids.length) return;
-  const pos = new Map(ids.map((id, i) => [id, i]));
-  const slots = [];
-  const picked = [];
-  state.tasks.forEach((t, i) => {
-    if (pos.has(t.id)) { slots.push(i); picked.push(t); }
-  });
-  picked.sort((a, b) => pos.get(a.id) - pos.get(b.id));
-  slots.forEach((slot, k) => { state.tasks[slot] = picked[k]; });
 }
 
 /* ---------------------------------------------------------------- 主题 */
@@ -1309,6 +1315,8 @@ function bind() {
 
   // 列表交互
   el.list.addEventListener('click', (e) => {
+    const pin = e.target.closest('[data-pin]');
+    if (pin) { togglePin(pin.dataset.pin); return; }
     const startBtn = e.target.closest('[data-start]');
     if (startBtn) { toggleStart(startBtn.dataset.start, startBtn.dataset.on === '1'); return; }
     const edit = e.target.closest('[data-edit]');
@@ -1332,37 +1340,6 @@ function bind() {
   el.list.addEventListener('focusout', (e) => {
     if (e.target.classList.contains('task-edit')) commitEdit(e.target);
   });
-
-  // 拖拽
-  el.list.addEventListener('dragstart', (e) => {
-    const task = e.target.closest('.task');
-    if (!task) return;
-    task.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', task.dataset.id); } catch (err) {}
-  });
-
-  el.list.addEventListener('dragend', (e) => {
-    const task = e.target.closest('.task');
-    if (task) task.classList.remove('dragging');
-    syncOrderFromDOM();
-    render();
-    scheduleSave();
-  });
-
-  el.list.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    const dragging = el.list.querySelector('.task.dragging');
-    if (!dragging) return;
-    const after = getDragAfterElement(el.list, e.clientY);
-    if (after == null) {
-      if (el.list.lastElementChild !== dragging) el.list.appendChild(dragging);
-    } else if (after !== dragging) {
-      el.list.insertBefore(dragging, after);
-    }
-  });
-
-  el.list.addEventListener('drop', (e) => e.preventDefault());
 
   // 底栏
   el.btnClearDone.addEventListener('click', clearDone);

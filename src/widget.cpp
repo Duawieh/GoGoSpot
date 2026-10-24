@@ -112,6 +112,7 @@ struct Task {
     long long dueMs = 0;        // Unix 毫秒，0 表示没设截止时间
     std::vector<wstring> links; // 从这里开始：可以挂多个链接或本地文件
     long long startedAt = 0;    // 正在进行：点下去的时刻，0 表示没在进行
+    bool pinned = false;        // 置顶：排在最前面，和控制台共用
 };
 
 static std::vector<Task> g_tasks;
@@ -448,6 +449,7 @@ static bool fetchTasks() {
         t.dueMs = _strtoi64(f[3].c_str(), nullptr, 10);
         t.title = u8tow(f[4]);
         if (f.size() >= 7) t.startedAt = _strtoi64(f[6].c_str(), nullptr, 10);
+        if (f.size() >= 8) t.pinned = (f[7] == "1");
         if (f.size() >= 6 && !f[5].empty()) {
             size_t start = 0;
             for (size_t i = 0; i <= f[5].size(); ++i) {
@@ -460,8 +462,9 @@ static bool fetchTasks() {
         list.push_back(std::move(t));
     }
 
-    // 按到期时间排，没截止的垫底；同时刻保持原来的先后
+    // 置顶的先排最前面；同组内按到期时间，没截止的垫底，同时刻保持原来的先后
     std::stable_sort(list.begin(), list.end(), [](const Task& a, const Task& b) {
+        if (a.pinned != b.pinned) return a.pinned;
         if (a.dueMs == 0 && b.dueMs == 0) return false;
         if (a.dueMs == 0) return false;
         if (b.dueMs == 0) return true;
@@ -2578,7 +2581,16 @@ static void finishEdit(bool commit) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
-// 右键任务行：推迟一天 / 删除
+// 右键任务行：置顶 / 推迟一天 / 删除
+static void pinTask(const wstring& id, bool on) {
+    if (id.empty()) return;
+    if (g_port == 0) findServerPort();
+    if (g_port == 0) return;
+    string body;
+    httpRequest(L"POST", L"/api/pin?id=" + id + (on ? L"&on=1" : L"&on=0"), body);
+    refreshAsync();
+}
+
 static void snoozeTask(const wstring& id) {
     if (id.empty()) return;
     if (g_port == 0) findServerPort();
@@ -3161,9 +3173,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             int idx = (row >= 0) ? g_scroll + row : -1;
             bool onTask = (idx >= 0 && idx < (int)g_tasks.size());
             wstring taskId = onTask ? g_tasks[idx].id : wstring();
+            bool taskPinned = onTask && g_tasks[idx].pinned;
 
             HMENU menu = CreatePopupMenu();
             if (onTask) {
+                AppendMenuW(menu, MF_STRING, 12, taskPinned ? L"取消置顶" : L"置顶");
                 AppendMenuW(menu, MF_STRING, 10, L"推迟一天");
                 AppendMenuW(menu, MF_STRING, 11, L"删除任务");
                 AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -3194,6 +3208,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 case 5: appSetWidgetEnabled(false); break;
                 case 10: snoozeTask(taskId); break;
                 case 11: removeTask(taskId); break;
+                case 12: pinTask(taskId, !taskPinned); break;
                 default: break;
             }
             return 0;

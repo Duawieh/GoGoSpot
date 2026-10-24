@@ -1142,6 +1142,11 @@ static Response apiWidget() {
             JVal* sa = t.get("startedAt");
             long long started = (sa && sa->kind == JVal::Num) ? (long long)sa->num : 0;
             rows += std::to_string(started);
+            rows += '\t';
+
+            // 置顶：排在列表最前面
+            JVal* pin = t.get("pinned");
+            rows += (pin && pin->kind == JVal::Bool && pin->b) ? "1" : "0";
             rows += '\n';
         }
     }
@@ -1312,6 +1317,42 @@ static Response apiStart(const string& id, bool on) {
 
         if (!saveTasksRoot(root)) return jsonError(500, "write failed");
         return jsonOk("\"startedAt\":" + std::to_string(on ? (long long)nowUnixMs() : 0));
+    }
+    return jsonError(404, "not found");
+}
+
+// 置顶：排在列表最前面。控制台和悬浮清单共用这一个标记。
+static Response apiPin(const string& id, bool on) {
+    if (id.empty()) return jsonError(400, "missing id");
+
+    std::lock_guard<std::mutex> lk(gDataMutex);
+
+    JVal root;
+    if (!loadTasksRoot(root)) return jsonError(500, "read failed");
+
+    JVal* tasks = root.get("tasks");
+    if (!tasks || tasks->kind != JVal::Arr) return jsonError(404, "no tasks");
+
+    for (auto& t : tasks->arr) {
+        if (t.kind != JVal::Obj) continue;
+        JVal* tid = t.get("id");
+        if (!tid || tid->kind != JVal::Str || tid->str != id) continue;
+
+        JVal* pin = t.get("pinned");
+        if (!pin) {
+            JVal nv;
+            nv.kind = JVal::Bool;
+            nv.b = false;
+            t.obj.emplace_back("pinned", std::move(nv));
+            pin = t.get("pinned");
+        }
+        pin->kind = JVal::Bool;
+        pin->b = on;
+        pin->num = 0;
+        pin->str.clear();
+
+        if (!saveTasksRoot(root)) return jsonError(500, "write failed");
+        return jsonOk(string("\"pinned\":") + (on ? "true" : "false"));
     }
     return jsonError(404, "not found");
 }
@@ -1666,6 +1707,13 @@ static Response handleApi(const string& method, const string& path,
         auto on = q.find("on");
         bool flag = (on == q.end()) ? true : (on->second != "0");
         return apiStart(it == q.end() ? string() : it->second, flag);
+    }
+    if (path == "/api/pin") {
+        if (method != "POST") return jsonError(405, "use POST");
+        auto it = q.find("id");
+        auto on = q.find("on");
+        bool flag = (on == q.end()) ? true : (on->second != "0");
+        return apiPin(it == q.end() ? string() : it->second, flag);
     }
     if (path == "/api/toggle") {
         if (method != "POST") return jsonError(405, "use POST");

@@ -1,4 +1,4 @@
-// 控制台第三批：设置面板 / 备份 / 导出导入 / 拖拽排序
+// 控制台第三批：设置面板 / 备份 / 导出导入 / 置顶排序
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -69,15 +69,30 @@ const mk = (i, title) => ({ id: 'k' + i, title, done: false, estimate: 30, due: 
   check('导入已落盘', saved.tasks.length === 2 && saved.tasks[0].title === '导入甲',
     saved.tasks.map(t => t.title).join(','));
 
-  // ---- 拖拽排序
+  // ---- 置顶：排序靠置顶按钮调，拖拽已经取消
   if (await page.locator('#sheet').isVisible()) { await page.click('#btnCloseSheet'); }
   await page.waitForTimeout(200);
   const rows = page.locator('#list .task');
-  await rows.nth(1).dragTo(rows.nth(0));
-  await page.waitForTimeout(900);
-  const order = await (await fetch(BASE + 'api/tasks')).json();
-  check('拖拽后顺序写回服务端', order.tasks[0].title === '导入乙',
-    order.tasks.map(t => t.title).join(','));
+  check('初始顺序就是存储顺序', (await rows.nth(0).textContent()).includes('导入甲'));
+
+  await rows.nth(1).locator('.task-pin').click();
+  await page.waitForTimeout(700);
+  const firstTxt = await page.locator('#list .task').first().textContent();
+  check('置顶后排到最前面', firstTxt.includes('导入乙'), firstTxt.trim().slice(0, 12));
+
+  const pinCls = await page.locator('#list .task').first().locator('.task-pin').getAttribute('class');
+  check('置顶按钮变成常显的选中态', pinCls.includes('is-on'), pinCls);
+
+  const savedPin = await (await fetch(BASE + 'api/tasks')).json();
+  const pinTask = savedPin.tasks.find((t) => t.title === '导入乙');
+  check('置顶写进任务字段', !!pinTask && pinTask.pinned === true,
+    'pinned=' + (pinTask && pinTask.pinned));
+  await page.screenshot({ path: path.join(SHOTS, 'c13-pin.png') });
+
+  await page.locator('#list .task').first().locator('.task-pin').click();
+  await page.waitForTimeout(700);
+  const backTxt = await page.locator('#list .task').first().textContent();
+  check('取消置顶后回到原顺序', backTxt.includes('导入甲'), backTxt.trim().slice(0, 12));
 
   // ---- 截止面板选完日期是否还开着
   await page.click('#dueBtn');

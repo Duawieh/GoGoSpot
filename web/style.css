@@ -972,8 +972,6 @@ html[data-theme="light"] .seg-btn.is-on { background: #fff; }
 
 html[data-theme="light"] .task:hover { background: #f7f9fd; }
 
-.task.dragging { opacity: 0.35; }
-
 .task.removing {
   opacity: 0;
   transform: translateX(14px);
@@ -1211,6 +1209,36 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 
 .task-go:hover { background: currentColor; }
 .task-go:hover svg { color: var(--bg, #14161d); }
+
+.task-pin {
+  flex: none;
+  width: 26px; height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity .15s, background .15s, color .15s;
+  margin-top: -1px;
+}
+
+.task:hover .task-pin { opacity: 1; }
+
+/* 置顶的那条：按钮常显并填实，一眼看得出它凭什么排在最前面 */
+.task-pin.is-on {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.task-pin.is-on svg { fill: currentColor; }
+
+.task-pin:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 
 .task-rename {
   flex: none;
