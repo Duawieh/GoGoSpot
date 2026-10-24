@@ -1,0 +1,8 @@
+# 仓库里统一存 LF，检出到工作区用 CRLF
+* text=auto eol=crlf
+
+# 二进制
+*.png binary
+*.ico binary
+*.exe binary
+*.o   binary

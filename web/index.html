@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>GoGoSpot 控制台</title>
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="backdrop">
+  <div class="glow glow-a"></div>
+  <div class="glow glow-b"></div>
+  <div class="grid-mask"></div>
+</div>
+
+<main class="app">
+
+  <!-- ---- 顶栏 ---- -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M94.2 50A44.2 44.2 0 1 1 50 5.8" stroke="currentColor" stroke-width="11.6"/>
+          <path d="M73.5 50h20.7" stroke="currentColor" stroke-width="11.6" stroke-linecap="round"/>
+          <circle cx="50" cy="50" r="26" fill="currentColor"/>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <h1 class="wordmark"><span class="wm-go">GoGo</span><span class="wm-spot">Spot</span></h1>
+        <p id="todayLabel">正在加载…</p>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <button class="icon-btn" id="btnTheme" title="切换主题" aria-label="切换主题">
+        <svg class="ico-sun" viewBox="0 0 24 24" width="18" height="18" fill="none">
+          <circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4L17 7M7 17l-1.6 1.6"
+                stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <svg class="ico-moon" viewBox="0 0 24 24" width="18" height="18" fill="none">
+          <path d="M20 13.5A8.2 8.2 0 019.9 3.3a8.5 8.5 0 1010.1 10.2z"
+                stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="btnData" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+          <circle cx="12" cy="12" r="3.1" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M19.1 14.6a1.6 1.6 0 00.3 1.8l.1.1a1.9 1.9 0 11-2.7 2.7l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5v.2a1.9 1.9 0 11-3.8 0v-.1a1.6 1.6 0 00-1-1.5 1.6 1.6 0 00-1.8.3l-.1.1a1.9 1.9 0 11-2.7-2.7l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H2.9a1.9 1.9 0 110-3.8h.1a1.6 1.6 0 001.5-1 1.6 1.6 0 00-.3-1.8l-.1-.1a1.9 1.9 0 112.7-2.7l.1.1a1.6 1.6 0 001.8.3h.1a1.6 1.6 0 001-1.5V2.9a1.9 1.9 0 113.8 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a1.9 1.9 0 112.7 2.7l-.1.1a1.6 1.6 0 00-.3 1.8v.1a1.6 1.6 0 001.5 1h.2a1.9 1.9 0 110 3.8h-.1a1.6 1.6 0 00-1.5 1z"
+                stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ---- 概览 ---- -->
+  <section class="overview">
+    <div class="ov-stat">
+      <span class="ov-num" id="statDone">0</span>
+      <span class="ov-total">/ <span id="statTotal">0</span></span>
+      <span class="ov-cap">已完成</span>
+    </div>
+
+    <div class="ov-track">
+      <div class="ov-bar" id="progressBar"></div>
+      <div class="ov-pct" id="progressPct">0%</div>
+    </div>
+
+    <div class="ov-stat ov-right">
+      <span class="ov-num" id="statPending">0</span>
+      <span class="ov-cap">待办</span>
+    </div>
+  </section>
+
+  <!-- ---- 输入区 ---- -->
+  <section class="composer">
+    <div class="composer-main">
+      <div class="composer-plus">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
+          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <input id="taskInput" type="text" autocomplete="off" spellcheck="false"
+             placeholder="要做什么？按 Enter 添加">
+      <button id="btnAdd" class="btn-add">添加</button>
+    </div>
+
+    <div class="composer-meta">
+      <div class="meta-field meta-est" id="estField" title="完成这件事大概要多久">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
+          <circle cx="12" cy="12" r="8.2" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M12 7.4V12l3.1 1.9" stroke="currentColor" stroke-width="1.6"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <button type="button" class="est-btn" id="estBtn" aria-haspopup="listbox" aria-expanded="false">
+          <span id="estLabel">预估时长</span>
+          <svg class="est-caret" viewBox="0 0 12 12" width="10" height="10" fill="none">
+            <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <div class="est-menu" id="estMenu" role="listbox" hidden>
+          <button type="button" role="option" data-est="10">10 分钟</button>
+          <button type="button" role="option" data-est="30">30 分钟</button>
+          <button type="button" role="option" data-est="60">1 小时</button>
+          <button type="button" role="option" data-est="120">2 小时</button>
+          <button type="button" role="option" data-est="300">5 小时</button>
+          <button type="button" role="option" data-est="1440">1 天</button>
+          <button type="button" role="option" data-est="" class="est-none">不设时长</button>
+        </div>
+      </div>
+
+      <div class="meta-field meta-due" id="dueField" title="截止时间，不设也行">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
+          <rect x="3.5" y="5" width="17" height="15.5" rx="3" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M8 3v4M16 3v4M3.5 10h17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <button type="button" class="due-btn is-empty" id="dueBtn"
+                aria-haspopup="dialog" aria-expanded="false">
+          <span id="dueLabel">截止时间</span>
+          <svg class="est-caret" viewBox="0 0 12 12" width="10" height="10" fill="none">
+            <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <div class="due-pop" id="duePop" role="dialog" aria-label="选择截止时间" hidden>
+          <div class="due-top">
+            <button type="button" class="due-nav" id="duePrev" aria-label="上个月">
+              <svg viewBox="0 0 12 12" width="11" height="11" fill="none">
+                <path d="M7.4 2.6L4.2 6l3.2 3.4" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <span class="due-month" id="dueMonth"></span>
+            <button type="button" class="due-nav" id="dueNext" aria-label="下个月">
+              <svg viewBox="0 0 12 12" width="11" height="11" fill="none">
+                <path d="M4.6 2.6L7.8 6l-3.2 3.4" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="due-week"><i>一</i><i>二</i><i>三</i><i>四</i><i>五</i><i>六</i><i>日</i></div>
+          <div class="due-grid" id="dueGrid"></div>
+
+          <div class="due-clock">
+            <span class="due-clock-cap">时间</span>
+            <input id="dueHH" type="text" inputmode="numeric" maxlength="2" value="23" aria-label="小时">
+            <b>:</b>
+            <input id="dueMM" type="text" inputmode="numeric" maxlength="2" value="59" aria-label="分钟">
+          </div>
+
+          <div class="due-foot">
+            <button type="button" class="due-quick" data-quick="today">今天</button>
+            <button type="button" class="due-quick" data-quick="tomorrow">明天</button>
+            <button type="button" class="due-quick" data-quick="monday">下周一</button>
+            <button type="button" class="due-quick due-clear" id="dueClear">清除</button>
+          </div>
+
+          <div class="due-repeat">
+            <span class="due-clock-cap">重复</span>
+            <div class="repeat-chips" id="repeatChips">
+              <button type="button" data-rep="" class="is-on">不重复</button>
+              <button type="button" data-rep="daily">每天</button>
+              <button type="button" data-rep="weekly">每星期</button>
+              <button type="button" data-rep="biweekly">每两星期</button>
+              <button type="button" data-rep="monthly">每月</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="meta-field meta-link" id="linkField" title="开始进行工作的文件或材料，可以填多个">
+        <button type="button" class="link-btn" id="btnStart" aria-expanded="false">从这里开始</button>
+        <input id="linkInput" type="text" autocomplete="off"
+               placeholder="开始进行工作的文件或材料">
+        <button type="button" class="link-paste" id="btnPasteLink" title="从剪贴板粘贴">粘贴</button>
+      </div>
+
+      <label class="meta-field meta-tags" title="标签，用逗号或空格分隔">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
+          <path d="M4 10.6V5.2c0-.7.5-1.2 1.2-1.2h5.4c.3 0 .6.1.8.3l8.1 8.1c.5.5.5 1.2 0 1.7l-5.4 5.4c-.5.5-1.2.5-1.7 0L4.3 11.4a1.2 1.2 0 01-.3-.8z"
+                stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+          <circle cx="8.2" cy="8.2" r="1.4" fill="currentColor"/>
+        </svg>
+        <input id="tagInput" type="text" autocomplete="off" placeholder="标签">
+      </label>
+    </div>
+
+    <div class="link-chips" id="linkChips" hidden></div>
+  </section>
+
+  <!-- ---- 筛选 ---- -->
+  <section class="toolbar">
+    <div class="seg" id="viewGroup" role="tablist">
+      <button class="seg-btn is-on" data-view="all" role="tab">全部</button>
+      <button class="seg-btn" data-view="today" role="tab">今天</button>
+      <button class="seg-btn" data-view="pending" role="tab">待办</button>
+      <button class="seg-btn" data-view="done" role="tab">已完成</button>
+    </div>
+
+    <div class="search">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none">
+        <circle cx="11" cy="11" r="6.4" stroke="currentColor" stroke-width="1.7"/>
+        <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+      <input id="searchInput" type="text" autocomplete="off" placeholder="搜索（/）">
+      <button id="btnClearSearch" class="search-clear" hidden aria-label="清除搜索">×</button>
+    </div>
+  </section>
+
+  <div class="tag-row" id="tagRow"></div>
+
+  <!-- ---- 列表 ---- -->
+  <section class="list-wrap">
+    <ul class="list" id="list"></ul>
+    <div class="empty" id="empty" hidden>
+      <div class="empty-art">
+        <svg viewBox="0 0 120 100" width="120" height="100" fill="none">
+          <rect x="18" y="16" width="84" height="68" rx="12" stroke="currentColor" stroke-width="2" opacity=".28"/>
+          <path d="M32 38h34M32 52h44M32 66h24" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" opacity=".22"/>
+          <circle cx="92" cy="66" r="16" fill="var(--accent)" opacity=".14"/>
+          <path d="M85 66.5l4.6 4.6L99.5 60" stroke="var(--accent)" stroke-width="2.6"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <p class="empty-title" id="emptyTitle">还没有任务</p>
+      <p class="empty-sub" id="emptySub">在上面输入框写下第一件事，按 Enter 添加</p>
+    </div>
+  </section>
+
+  <!-- ---- 底栏 ---- -->
+  <footer class="footer">
+    <span id="footerLeft">共 0 项</span>
+    <div class="footer-right">
+      <button id="btnClearDone" class="link-btn">清除已完成</button>
+      <span class="save-state" id="saveState">
+        <i class="save-dot"></i><span id="saveText">已同步</span>
+      </span>
+    </div>
+  </footer>
+
+</main>
+
+<!-- ---- 数据面板 ---- -->
+<div class="sheet-mask" id="sheetMask" hidden>
+  <aside class="sheet" id="sheet" role="dialog" aria-label="设置">
+    <div class="sheet-head">
+      <h2>设置</h2>
+      <button class="icon-btn" id="btnCloseSheet" aria-label="关闭">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="sheet-body">
+      <div class="setting-row">
+        <div class="setting-text">
+          <span class="setting-name">开机自动启动</span>
+          <span class="setting-desc">开机后自动在桌面出现</span>
+        </div>
+        <button class="switch" id="swAutostart" role="switch" aria-checked="false" aria-label="开机自动启动">
+          <span class="switch-knob"></span>
+        </button>
+      </div>
+
+      <div class="sheet-divider"></div>
+
+      <div class="setting-row">
+        <div class="setting-text">
+          <span class="setting-name">悬浮清单</span>
+          <span class="setting-desc">常驻桌面，随时勾任务</span>
+        </div>
+        <button class="switch" id="swWidget" role="switch" aria-checked="false" aria-label="悬浮清单">
+          <span class="switch-knob"></span>
+        </button>
+      </div>
+
+      <div class="setting-note" id="widgetNote" hidden>
+        关闭后悬浮清单将不再显示
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-text">
+          <span class="setting-name">悬浮清单置顶</span>
+          <span class="setting-desc">保持悬浮清单置于最上层</span>
+        </div>
+        <button class="switch" id="swTopmost" role="switch" aria-checked="false" aria-label="悬浮清单置顶">
+          <span class="switch-knob"></span>
+        </button>
+      </div>
+
+      <div class="sheet-divider"></div>
+
+      <div class="section-label">数据与备份</div>
+
+      <div class="info-block">
+        <span class="info-label">数据文件</span>
+        <code id="infoPath">—</code>
+      </div>
+
+      <div class="sheet-actions">
+        <button class="btn-ghost" id="btnManualBackup">立即备份</button>
+        <button class="btn-ghost" id="btnExport">导出 JSON</button>
+        <button class="btn-ghost" id="btnImport">导入 JSON</button>
+        <input type="file" id="fileInput" accept="application/json,.json" hidden>
+      </div>
+
+      <div class="backup-head">
+        <span>历史备份</span>
+        <span class="muted" id="backupCount"></span>
+      </div>
+      <div class="backup-list" id="backupList"></div>
+    </div>
+  </aside>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

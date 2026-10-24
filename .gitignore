@@ -1,0 +1,21 @@
+# 编译产物
+*.exe
+*.o
+build/
+
+# 运行时数据（自己的任务和备份，不进版本库）
+data/
+
+# 临时文件
+out.txt
+server.log
+
+# 测试脚本自己生成的中间文件
+tests/shots/
+tests/*.json
+
+# 本地工作目录，不属于项目本身
+.workbuddy-ai/
+
+# 内部测试报告不入库；docs 下的截图是 README 用的，要留
+docs/test-report-*.md

@@ -1,0 +1,4 @@
+#include "resource.h"
+
+// 图标本体在 icons/app.ico，windres 靠 -I icons 找到它（见 build.bat）
+IDI_APPICON ICON "app.ico"
