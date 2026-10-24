@@ -404,13 +404,20 @@ function startButton(t) {
     </button>`;
 }
 
-// 行顶那条直进度条。颜色按「用时占比」分档：<=60% 绿，<=80% 黄，再往上红
+// 紧急程度对应的进度条 class，和悬浮清单的红 / 黄 / 紫三档对齐
+function urgencyCls(t) {
+  const u = urgencyOf(t);
+  return u === 2 ? 'is-red' : (u === 1 ? 'is-yellow' : 'is-purple');
+}
+
+// 行顶那条直进度条。颜色按「用时占比」分档：<=60% 绿，<=80% 黄，再往上红。
+// 没填预估的算不出占比：固定八成，颜色跟紧急程度走。
 function progressBar(t) {
   if (!t.startedAt) return '';
   const id = esc(t.id);
   if (!hasEstimate(t)) {
-    return `<div class="task-progress is-unknown" data-bar="${id}">
-      <i style="width:60%"></i>
+    return `<div class="task-progress ${urgencyCls(t)}" data-bar="${id}">
+      <i style="width:80%"></i>
     </div>`;
   }
   const r = progressRatio(t);
@@ -477,9 +484,10 @@ function taskHTML(t) {
               aria-label="${t.pinned ? '取消置顶' : '置顶'}"
               title="${t.pinned ? '取消置顶' : '置顶'}">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
-             stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round">
-          <path d="M12 17v5"/>
-          <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+             stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+          <path d="M5 4.5h14"/>
+          <path d="M12 20V9.5"/>
+          <path d="M7.8 13.2 12 9.5l4.2 3.7"/>
         </svg>
       </button>
       ${startButton(t)}
@@ -1078,16 +1086,15 @@ setInterval(() => {
     if (!t || !t.startedAt) return;
     const fill = node.querySelector('i');
     if (!fill) return;
-    if (!hasEstimate(t)) {           // 没填预估：固定 60% 紫色，不跟时间走
-      fill.style.width = '60%';
-      node.className = 'task-progress is-unknown';
+    if (!hasEstimate(t)) {           // 没填预估：固定八成，颜色跟紧急程度走
+      fill.style.width = '80%';
+      node.className = 'task-progress ' + urgencyCls(t);
       return;
     }
     const r = progressRatio(t);
     fill.style.width = (r * 100).toFixed(1) + '%';
-    node.classList.toggle('is-green', r <= 0.6);
-    node.classList.toggle('is-yellow', r > 0.6 && r <= 0.8);
-    node.classList.toggle('is-red', r > 0.8);
+    node.className = 'task-progress ' +
+      (r <= 0.6 ? 'is-green' : (r <= 0.8 ? 'is-yellow' : 'is-red'));
   });
 }, 1000);
 

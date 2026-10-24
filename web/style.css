@@ -1159,8 +1159,8 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 .task-progress.is-red i {
   background: linear-gradient(90deg, rgba(255, 92, 112, 0.52), rgba(255, 92, 112, 0.08));
 }
-/* 没填预估：紫色固定 60%，表示「在做，但不知道还剩多少」 */
-.task-progress.is-unknown i {
+/* 不紧急那档：没填预估的任务染色也用这个紫，跟悬浮清单对齐 */
+.task-progress.is-purple i {
   background: linear-gradient(90deg, rgba(178, 132, 255, 0.55), rgba(178, 132, 255, 0.10));
 }
 
@@ -1227,13 +1227,13 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 
 .task:hover .task-pin { opacity: 1; }
 
-/* 置顶的那条：按钮常显并填实，一眼看得出它凭什么排在最前面 */
+/* 置顶的那条：按钮常显并加重笔画，一眼看得出它凭什么排在最前面 */
 .task-pin.is-on {
   opacity: 1;
   color: var(--accent);
 }
 
-.task-pin.is-on svg { fill: currentColor; }
+.task-pin.is-on svg { stroke-width: 2.4; }
 
 .task-pin:hover {
   background: var(--accent-soft);

@@ -1,5 +1,5 @@
-// GoGoSpot 程序外壳：本地服务、悬浮清单、托盘图标装进同一个 exe。
-// 服务跑在后台线程，不弹命令行窗口；托盘右键可以打开控制台或退出。
+// GoGoSpot 程序外壳：后台、悬浮清单、托盘图标装进同一个 exe。
+// 后台跑在独立线程，不弹命令行窗口；托盘右键可以打开控制台或退出。
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -79,6 +79,19 @@ static bool trayAdd(HWND h, HICON icon) {
     g_nid.hIcon = icon;
     lstrcpynW(g_nid.szTip, L"GoGoSpot", 128);
     return Shell_NotifyIconW(NIM_ADD, &g_nid) != FALSE;
+}
+
+// 系统通知：复用托盘图标发气泡。Win10 之后它会进通知中心，不是老式气球。
+// 后台线程直接调，这里只改一份副本，不动 g_nid 本身。
+void appNotify(const wchar_t* text) {
+    if (!g_trayWnd) return;
+    NOTIFYICONDATAW nid = g_nid;
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    nid.uTimeout = 8000;
+    lstrcpynW(nid.szInfoTitle, L"GoGoSpot", 64);
+    lstrcpynW(nid.szInfo, text, 256);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 static void showTrayMenu(HWND h) {

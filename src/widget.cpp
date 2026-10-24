@@ -56,8 +56,9 @@ static const UINT_PTR TIMER_CARET    = 7;
 static const UINT_PTR TIMER_ROWS     = 8;
 static const UINT_PTR TIMER_TRAY     = 9;
 static const UINT_PTR TIMER_PROG     = 10;
+static const UINT_PTR TIMER_TICK     = 11;   // 有任务在跑时每秒重画，计时器才走得动
 
-// 服务端改设置后，通过这个自定义消息通知窗口（可跨线程 Post）
+// 后台改设置后，通过这个自定义消息通知窗口（可跨线程 Post）
 static const UINT WM_APP_WIDGET_ENABLED = WM_APP + 1;
 static const UINT WM_APP_TOPMOST        = WM_APP + 2;
 static const UINT WM_APP_TRAY_OPEN      = WM_APP + 3;
@@ -122,7 +123,7 @@ static int   g_port    = 0;
 static int   g_scroll  = 0;
 static bool  g_dragging = false;
 static bool  g_loaded  = false;
-static bool  g_loadError = false;   // 服务在，但任务文件读不出来（数据坏了或权限问题）
+static bool  g_loadError = false;   // 后台在，但任务文件读不出来（数据坏了或权限问题）
 
 static bool  g_expanded = false;     // 收起（只显示圆点）/ 展开（显示任务）
 static bool  g_widgetOn = true;      // 悬浮清单总开关，关掉就整个隐藏
@@ -480,11 +481,25 @@ static bool fetchTasks() {
     g_pending = pending;
     g_total = total;
     g_loaded = true;
-    // 没有 "#待办 总数" 这一行说明服务端回的是错误 JSON，别把它当成「全部完成了」
+    // 没有 "#待办 总数" 这一行说明后台回的是错误 JSON，别把它当成「全部完成了」
     g_loadError = !sawHeader;
 
     // 数据刚到：有没填预估的任务在跑就把呼吸接上，别等下一次刷新
     if (needBreath() && !g_progOn) kickProg();
+
+    // 有任务在跑就得每秒重画一次，卡片里的「已进行」和窄条里的倒计时才走得动
+    bool anyRunning = false;
+    for (size_t i = 0; i < g_tasks.size(); ++i) {
+        if (g_tasks[i].startedAt > 0) { anyRunning = true; break; }
+    }
+    static bool tickOn = false;
+    if (anyRunning && !tickOn) {
+        SetTimer(g_hwnd, TIMER_TICK, 1000, nullptr);
+        tickOn = true;
+    } else if (!anyRunning && tickOn) {
+        KillTimer(g_hwnd, TIMER_TICK);
+        tickOn = false;
+    }
 
     int maxScroll = (int)g_tasks.size() - VISIBLE_ROWS;
     if (maxScroll < 0) maxScroll = 0;
@@ -555,16 +570,39 @@ static Font* smallFont() {
 }
 
 // align: 0=左 1=居中 2=右
+// outline 不透明时给文字描一圈边：进度色铺满整行时，底下那行小字全靠它才分得出来
 static void drawText(Graphics& g, const wstring& text, Font* font, const RectF& r,
-                     const Color& color, bool centerV, int align) {
-    SolidBrush br(color);
+                     const Color& color, bool centerV, int align,
+                     Color outline = Color(0, 0, 0, 0)) {
     StringFormat fmt;
     fmt.SetTrimming(StringTrimmingEllipsisCharacter);
     fmt.SetFormatFlags(StringFormatFlagsNoWrap);
     fmt.SetLineAlignment(centerV ? StringAlignmentCenter : StringAlignmentNear);
     fmt.SetAlignment(align == 1 ? StringAlignmentCenter
                    : align == 2 ? StringAlignmentFar : StringAlignmentNear);
-    g.DrawString(text.c_str(), -1, font, r, &fmt, &br);
+
+    if (outline.GetA() == 0) {
+        SolidBrush br(color);
+        g.DrawString(text.c_str(), -1, font, r, &fmt, &br);
+        return;
+    }
+
+    // 描边得走路径：先把文字转成图形，用笔画一圈再填字身。
+    // 直接 DrawString 两遍做不出「外描边」，只会糊成一团。
+    FontFamily fam;
+    font->GetFamily(&fam);
+    GraphicsPath path;
+    if (path.AddString(text.c_str(), -1, &fam, font->GetStyle(),
+                       font->GetSize(), r, &fmt) != Ok) {
+        SolidBrush br(color);
+        g.DrawString(text.c_str(), -1, font, r, &fmt, &br);
+        return;
+    }
+    Pen pen(outline, 1.0f);
+    pen.SetLineJoin(LineJoinRound);
+    g.DrawPath(&pen, &path);
+    SolidBrush br(color);
+    g.FillPath(&br, &path);
 }
 
 static long long nowMs() {
@@ -596,6 +634,11 @@ static Urgency urgencyOf(const Task& t) {
     if (remain <= redLine) return URG_RED;
     if (remain <= URG_YELLOW_MS) return URG_YELLOW;
     return URG_NONE;
+}
+
+// 紧急程度对应的颜色：进度染色、窄条、正在进行按钮都用它，红黄紫三档一一对上
+static Color urgencyColor(Urgency u) {
+    return (u == URG_RED) ? C_RED : (u == URG_YELLOW ? C_AMBER : C_PURPLE);
 }
 
 // 全局最急的那一档，决定圆点外面套什么颜色的圈
@@ -722,6 +765,17 @@ static wstring shortDuration(int minutes) {
     return buf;
 }
 
+// 计时器文本 HH:MM:SS。负数照写，前面带个减号——倒计时过了 100% 继续往下走
+static wstring clockText(long long ms) {
+    bool neg = ms < 0;
+    if (neg) ms = -ms;
+    long long total = ms / 1000;
+    wchar_t buf[32];
+    swprintf(buf, 32, neg ? L"-%02d:%02d:%02d" : L"%02d:%02d:%02d",
+             (int)(total / 3600), (int)(total / 60 % 60), (int)(total % 60));
+    return buf;
+}
+
 // ---- 绘制 ----
 
 // GoGoSpot 标识：3/4 圆弧 + 圆点，比例取自 1024 画布。
@@ -768,10 +822,8 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
     auto A = [&](BYTE a) { return (BYTE)(a * fade); };
     auto S = [&](BYTE a) { return (BYTE)(a * shadowFade); };
 
-    const Urgency u   = urgencyOf(*t);
-    const Color   warm = (u == URG_RED)    ? C_RED
-                       : (u == URG_YELLOW) ? C_AMBER
-                                           : C_PURPLE;
+    const Urgency u    = urgencyOf(*t);
+    const Color   warm = urgencyColor(u);
 
     // 左端固定在圆点右侧，宽度从 0 长到 full——像从圆点背后抽出来，
     // 但不需要任何裁切，边缘永远是完整的圆角
@@ -857,7 +909,8 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
 
             REAL anim = (g_progAll || (!g_progId.empty() && t->id == g_progId)) ? g_progAnim : 1.0f;
             if (!hasEstimate(*t)) {
-                // 没填预估：整圈紫色呼吸，不表示具体比例
+                // 没填预估：整圈呼吸，不表示具体比例。环形固定用紫色，
+                // 不跟紧急程度走——那是行内填充和圆点外圈的事。
                 BYTE a = (BYTE)(A((BYTE)(130 + 105 * breatheK())) * anim);
                 Pen ringPen(Color(a, C_PURPLE.GetR(), C_PURPLE.GetG(), C_PURPLE.GetB()), 2.6f);
                 ringPen.SetStartCap(LineCapRound);
@@ -883,15 +936,32 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
     SolidBrush bb(Color(A(245), warm.GetR(), warm.GetG(), warm.GetB()));
     g.FillPath(&bb, &bar);
 
-    // 右侧放剩余时间，标题占剩下的宽度
+    // 右侧那一列：平时只有剩余时间；进行中改成上下两行——上面剩余时间，下面倒计时
     wstring due = dueText(*t);
-    REAL dueW = 0;
-    if (!due.empty()) {
-        RectF meas;
-        g.MeasureString(due.c_str(), -1, smallFont(), PointF(0, 0), &meas);
-        dueW = meas.Width + 2;
-        if (dueW > 54) dueW = 54;
+    bool running = (t->startedAt > 0);
+    long long runStart = 0;
+    REAL runRatio = 0;
+    wstring tail;                       // 第二行：倒计时，没预估就写「正在进行」
+    if (running) {
+        progressOf(*t, nowMs(), runStart, runRatio);
+        tail = hasEstimate(*t)
+             ? clockText((long long)t->estimate * 60000LL - (nowMs() - runStart))
+             : wstring(L"正在进行");
     }
+
+    REAL dueW = 0;
+    auto needW = [&](const wstring& s) {
+        if (s.empty()) return (REAL)0;
+        RectF meas;
+        g.MeasureString(s.c_str(), -1, smallFont(), PointF(0, 0), &meas);
+        return meas.Width + 2;
+    };
+    dueW = needW(due);
+    if (running) {
+        REAL w2 = needW(tail);
+        if (w2 > dueW) dueW = w2;
+    }
+    if (dueW > 64) dueW = 64;
 
     // 排版按满宽算，画的时候裁到当前宽度——文字是随着窄条长出来一点点露出来的，
     // 不会因为宽度不够被挤成省略号
@@ -916,8 +986,20 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
         } else {
             dueCol = g_dayMode ? Color(A(255), 104, 72, 166) : Color(A(255), 214, 198, 255);
         }
-        drawText(g, due, smallFont(), RectF(right - dueW, r.Y, dueW, r.Height),
-                 dueCol, true, 2);
+
+        if (running) {
+            // 两行：上面剩余时间，下面倒计时。倒计时的颜色跟进度条同一档。
+            // 40px 高的窄条塞两行 11px 小字，行心定在 12.5 / 27.5，
+            // 上下各留 7px——再往上顶就贴边了
+            drawText(g, due, smallFont(), RectF(right - dueW, r.Y + 3.5f, dueW, 18),
+                     dueCol, true, 2);
+            Color tailCol = hasEstimate(*t) ? progressColorOf(*t, runRatio) : C_PURPLE;
+            drawText(g, tail, smallFont(), RectF(right - dueW, r.Y + 18.5f, dueW, 18),
+                     tailCol, true, 2);
+        } else {
+            drawText(g, due, smallFont(), RectF(right - dueW, r.Y, dueW, r.Height),
+                     dueCol, true, 2);
+        }
     }
 
     g.Restore(textState);
@@ -969,7 +1051,7 @@ static void paintDot(Graphics& g) {
             const REAL rr = 12.2f;      // 内壁 9.6，外沿 14.8，都在光环里面
 
             if (!hasEstimate(*pt)) {
-                // 没填预估：整圈紫色呼吸，看不出比例，只表示还在做
+                // 没填预估：整圈呼吸，看不出比例，只表示还在做。环形固定紫色。
                 BYTE a = (BYTE)(255 * g_dotRingA * (0.55f + 0.45f * breatheK()) * anim);
                 Pen pen(Color(a, C_PURPLE.GetR(), C_PURPLE.GetG(), C_PURPLE.GetB()), 5.2f);
                 g.DrawEllipse(&pen, cx - rr, cy - rr, rr * 2, rr * 2);
@@ -1424,15 +1506,20 @@ static void paintRowBar(Graphics& g, const RectF& rowR, REAL ratio, Color pc, RE
 
     REAL w = rowR.Width * ratio;
     if (w < 6) w = 6;
-    GraphicsPath fp;
-    roundRect(fp, RectF(rowR.X, rowR.Y, w, rowR.Height), 10.0f);
+
+    // 填充块别自己再算一次圆角：宽度小于圆角直径时那四段圆弧会互相穿过去，
+    // 刚点下「正在进行」的那一下会糊出一坨往外鼓的胶囊。
+    // 改成按行本身的圆角裁一刀——右端是齐口，左端跟着行的圆角走，任何宽度都正常。
+    GraphicsState st = g.Save();
+    g.SetClip(&hp);
     LinearGradientBrush lg(PointF(rowR.X, rowR.Y), PointF(rowR.X + w, rowR.Y),
                            fadeCol(Color(132, pc.GetR(), pc.GetG(), pc.GetB()), alpha),
                            fadeCol(Color(20, pc.GetR(), pc.GetG(), pc.GetB()), alpha));
-    g.FillPath(&lg, &fp);
+    g.FillRectangle(&lg, RectF(rowR.X, rowR.Y, w, rowR.Height));
+    g.Restore(st);
 }
 
-// 置顶标记：一个上窄下宽的图钉头加一根针，和控制台那个 SVG 的轮廓一致。
+// 图钉：标题栏那个「置顶悬浮清单」按钮用。上窄下宽的钉头加一根针。
 // 11px 画不出原图那圈圆角，远看是同一个形状就够了。
 static void paintPin(Graphics& g, REAL cx, REAL cy, REAL k, Color col) {
     PointF head[4] = {
@@ -1451,6 +1538,18 @@ static void paintPin(Graphics& g, REAL cx, REAL cy, REAL k, Color col) {
     needle.SetStartCap(LineCapRound);
     needle.SetEndCap(LineCapRound);
     g.DrawLine(&needle, cx, cy - 1.0f * k, cx, cy + 3.6f * k);
+}
+
+// 上载标记：一道顶边加一支向上的箭头。任务「浮到最前面」用它，
+// 和控制台 .task-pin 里那个 SVG 是同一个形状。
+static void paintRise(Graphics& g, REAL cx, REAL cy, REAL k, Color col) {
+    Pen pen(col, 1.4f * k);
+    pen.SetStartCap(LineCapRound);
+    pen.SetEndCap(LineCapRound);
+    g.DrawLine(&pen, cx - 4.0f * k, cy - 4.6f * k, cx + 4.0f * k, cy - 4.6f * k);
+    g.DrawLine(&pen, cx, cy + 4.4f * k, cx, cy - 1.6f * k);
+    g.DrawLine(&pen, cx - 2.6f * k, cy + 1.0f * k, cx, cy - 1.6f * k);
+    g.DrawLine(&pen, cx + 2.6f * k, cy + 1.0f * k, cx, cy - 1.6f * k);
 }
 
 // 画一行任务。dx 是横向偏移（勾掉后往右滑用），alpha 是整体透明度。
@@ -1477,8 +1576,8 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
 
         REAL anim = (g_progAll || (!g_progId.empty() && t.id == g_progId)) ? g_progAnim : 1.0f;
         if (!hasEstimate(t)) {
-            // 没填预估：固定 60% 紫色填充，不跟着时间走
-            paintRowBar(g, rowR, 0.6f * anim, C_PURPLE, alpha);
+            // 没填预估：固定八成填充，颜色跟紧急程度走，不跟着时间变
+            paintRowBar(g, rowR, 0.8f * anim, urgencyColor(u), alpha);
         } else {
             paintRowBar(g, rowR, ratio * anim, progressColorOf(t, ratio), alpha);
         }
@@ -1526,16 +1625,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
 
     // 标题（一行）+ 时间/时长（第二行）
     REAL titleX = rowR.X + 38;
-    REAL titleW = rowR.Width - 38 - 10 - 30;   // 右边留给「正在进行」
-
-    // 置顶的行在勾选框右边挂个图钉，和控制台那个同色同形；
-    // 没有它的话，一条 30 天后截止的任务排在最前面会让人以为排序坏了
-    if (t.pinned) {
-        paintPin(g, rowR.X + 33.5f, rowY + 19.0f, 1.0f,
-                 fadeCol(checked ? C_TEXT_FAINT : C_ACCENT, alpha));
-        titleX += 13;
-        titleW -= 13;
-    }
+    REAL titleW = rowR.Width - 38 - 10 - 30 - 26;   // 右边留给「置顶」「正在进行」
 
     // 挂了材料的行，标题用强调色：一眼能看出点它能跳过去
     Color titleCol = checked ? C_TEXT_FAINT : (t.links.empty() ? C_TEXT : C_ACCENT);
@@ -1557,8 +1647,21 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
         const REAL pr = 9.0f;
         bool running = (t.startedAt > 0);
 
+        // 左边那个：置顶开关。置顶的常显，其余悬停才出来
+        REAL qcx = rowR.X + rowR.Width - 45;
+        if (t.pinned || (rowIdx >= 0 && g_hoverRow == rowIdx && !g_dragging)) {
+            Color bc = t.pinned ? C_ACCENT : C_TEXT_FAINT;
+            if (t.pinned) {
+                SolidBrush bg(fadeCol(Color(56, bc.GetR(), bc.GetG(), bc.GetB()), alpha));
+                g.FillEllipse(&bg, qcx - pr, pcy - pr, pr * 2, pr * 2);
+            }
+            Pen ring(fadeCol(Color(t.pinned ? 190 : 110, bc.GetR(), bc.GetG(), bc.GetB()), alpha), 1.0f);
+            g.DrawEllipse(&ring, qcx - pr, pcy - pr, pr * 2, pr * 2);
+            paintRise(g, qcx, pcy, 0.85f, fadeCol(bc, alpha));
+        }
+
         if (running || (rowIdx >= 0 && g_hoverRow == rowIdx && !g_dragging)) {
-            Color bc = (u == URG_RED) ? C_RED : (u == URG_YELLOW ? C_AMBER : C_PURPLE);
+            Color bc = urgencyColor(u);
             SolidBrush bgc(fadeCol(Color(running ? 72 : 56, bc.GetR(), bc.GetG(), bc.GetB()), alpha));
             g.FillEllipse(&bgc, pcx - pr, pcy - pr, pr * 2, pr * 2);
             Pen ring(fadeCol(Color(running ? 190 : 150, bc.GetR(), bc.GetG(), bc.GetB()), alpha), 1.0f);
@@ -1582,11 +1685,22 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     wstring dur = shortDuration(t.estimate);
     if (!meta.empty() && !dur.empty()) meta += L"  ·  " + dur;
     else if (meta.empty()) meta = dur;
+
+    // 进行中再补一段：有预估就数「已进行」多久，没预估只说「正在进行」
+    if (t.startedAt > 0) {
+        long long st = 0;
+        REAL r2 = 0;
+        progressOf(t, nowMs(), st, r2);
+        if (!meta.empty()) meta += L"  ·  ";
+        meta += hasEstimate(t) ? (L"已进行 " + clockText(nowMs() - st)) : wstring(L"正在进行");
+    }
     if (!meta.empty()) {
         Color mc = (u == URG_NONE) ? C_TEXT_FAINT
                  : (u == URG_RED ? Color(255, 255, 150, 170) : Color(255, 250, 205, 146));
+        // 进行中时整行被进度色盖住，这行小字加一圈白边才看得清
+        Color edge(t.startedAt > 0 ? (BYTE)(80 * alpha) : (BYTE)0, 255, 255, 255);
         drawText(g, meta, smallFont(), RectF(titleX, rowY + 29, titleW, 16),
-                 fadeCol(mc, alpha), true, 0);
+                 fadeCol(mc, alpha), true, 0, edge);
     }
 }
 
@@ -1684,6 +1798,19 @@ static void paint(HDC dc) {
             g.DrawLine(&pen, br.X + 7, br.Y + 7, br.X + 15, br.Y + 15);
             g.DrawLine(&pen, br.X + 15, br.Y + 7, br.X + 7, br.Y + 15);
         }
+
+        // 置顶开关：图钉。开着的时候点亮，和控制台那个开关同一个值
+        {
+            RectF br((REAL)(SHADOW + CARD_W - 60), (REAL)(SHADOW + 13), 22, 22);
+            if (g_hoverBtn == 4) {
+                GraphicsPath hp;
+                roundRect(hp, br, 7.0f);
+                SolidBrush hb(C_HOVER);
+                g.FillPath(&hb, &hp);
+            }
+            paintPin(g, br.X + 11.0f, br.Y + 12.3f, 1.15f,
+                     g_topmost ? C_ACCENT : C_TEXT_FAINT);
+        }
     }
 
     {
@@ -1704,7 +1831,7 @@ static void paint(HDC dc) {
     if (g_scroll > maxScroll) g_scroll = maxScroll;
 
     if (!g_loaded) {
-        drawText(g, L"等待本地服务…", smallFont(),
+        drawText(g, L"等待后台…", smallFont(),
                  RectF((REAL)SHADOW, (REAL)(SHADOW + LIST_TOP), (REAL)CARD_W, (REAL)ROW_H),
                  C_TEXT_FAINT, true, 1);
     } else if (g_loadError) {
@@ -1899,6 +2026,21 @@ static void applyTopmost() {
     present();
 }
 
+// 标题栏那个置顶按钮：改的就是「悬浮清单置顶」这个设置，和控制台同一个值。
+// 先按预期值切过去（点下去立刻有反应），再把请求发出去落盘；
+// 后台存完会回一条 WM_APP_TOPMOST，值一样，等于确认一次。
+static void toggleTopmost() {
+    bool on = !g_topmost;
+    g_topmost = on;
+    applyTopmost();
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+
+    if (g_port == 0) findServerPort();
+    if (g_port == 0) return;
+    string body;
+    httpRequest(L"POST", wstring(L"/api/topmost?on=") + (on ? L"1" : L"0"), body);
+}
+
 static void keepAboveDesktop() {
     // 置顶模式：一直压在普通窗口上面；但前台是全屏程序时先躲开，别打扰看视频打游戏
     if (g_topmost) {
@@ -2014,8 +2156,19 @@ static void syncPillWidth() {
     if (t) {
         // 22 左内边距 + 标题 + 15 右内边距 + 8 间隔 + 10 余量（DrawString 自带内边距）
         wstring due = dueText(*t);
+        REAL colW = due.empty() ? 0.0f : textWidth(due, smallFont());
+        if (t->startedAt > 0) {          // 进行中右边那列还要塞下倒计时
+            long long st = 0;
+            REAL rr = 0;
+            progressOf(*t, nowMs(), st, rr);
+            wstring tail = hasEstimate(*t)
+                         ? clockText((long long)t->estimate * 60000LL - (nowMs() - st))
+                         : wstring(L"正在进行");
+            REAL w2 = textWidth(tail, smallFont());
+            if (w2 > colW) colW = w2;
+        }
         REAL logical = 22.0f + textWidth(t->title, titleFont()) + 15.0f + 10.0f;
-        if (!due.empty()) logical += textWidth(due, smallFont()) + 8.0f;
+        if (colW > 0) logical += colW + 8.0f;
         if (logical < (REAL)PILL_MIN) logical = (REAL)PILL_MIN;
         if (logical > (REAL)PILL_W)   logical = (REAL)PILL_W;
 
@@ -2129,7 +2282,9 @@ static void resolveCardPos(int& x, int& y, int w, int h) {
     if (y < work.top)  y = work.top;
 }
 
-static void expandWidget() {
+// bringCursor：从圆点点开时为真。空间不够时卡片会翻到圆点另一侧，或者被夹进工作区，
+// 这时把指针搬到卡片上，免得用户找不到它（也会立刻撞上「移开就收起」）。
+static void expandWidget(bool bringCursor = false) {
     if (g_expanded) return;
 
     // 窄条可能还在滑动，先让它落位。
@@ -2162,6 +2317,15 @@ static void expandWidget() {
 
     placeWindow(cardX, cardY, g_winW, g_winH);
     if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+
+    if (bringCursor && (cardX != wr.left || cardY != wr.top)) {
+        // 卡片没开在圆点那儿（翻了边或者被夹进工作区）：鼠标留在原处就丢了目标，
+        // 还会立刻撞上「移开就收起」。落点是左上角那个徽标——它和圆点原本是同一个
+        // 位置，挪过去之后视线能直接对上；那块地方没有点击和悬停，不会误触。
+        SetCursorPos(cardX + (int)((SHADOW + 25) * g_scale),
+                     cardY + (int)((SHADOW + 23) * g_scale));
+    }
+
     trackLeave();
 
     SetTimer(g_hwnd, TIMER_FADE, 16, nullptr);
@@ -2184,8 +2348,8 @@ static void collapseWidget() {
 
     int d = dotPixels();
 
-    // 回到展开前圆点的位置，而不是卡片现在的左上角：贴边时卡片会翻到另一侧，
-    // 按卡片位置收回去，圆点就跟着跑偏了
+    // 回到圆点位置。展开时卡片可能翻到另一侧，所以不能直接按卡片当前位置收；
+    // 但用户拖动卡片时 g_dotX/g_dotY 是跟着走的，收起后圆点就落在卡片现在的左上角
     placeWindow(g_dotX, g_dotY, d + g_pillW, d);
     present();
 
@@ -2291,6 +2455,7 @@ static int hitButton(int cx, int cy) {
         return -1;
     }
     if (inRect(cx, cy, CARD_W - 34, 13, 22, 22)) return 1;
+    if (inRect(cx, cy, CARD_W - 60, 13, 22, 22)) return 4;
     return -1;
 }
 
@@ -2311,12 +2476,21 @@ static int hitLinkRow(int cx, int cy) {
 
 static void refreshAsync();   // 定义在后面
 
-// 右边那个环 / 按钮。画的是个 18px 的圆，但判定给整块行尾，别让人瞄半天
+// 行尾两个按钮的命中区：画的是 18px 的圆，判定给整格，别让人瞄半天。
+// cx/cy 是卡片坐标（toCard 已经减掉 SHADOW），这里不能再加 SHADOW，否则整块往右偏一格。
 static bool hitProgress(int cx, int cy, int row) {
     if (row < 0) return false;
-    REAL right = (REAL)SHADOW + 6 + (REAL)CARD_W - 12;
-    REAL rowTop = (REAL)(SHADOW + LIST_TOP) + (REAL)row * ROW_H;
-    return inRect(cx, cy, right - 56, rowTop + 2, 52, ROW_H - 4);
+    REAL right = (REAL)(6 + CARD_W - 12);
+    REAL rowTop = (REAL)(LIST_TOP + row * ROW_H);
+    return inRect(cx, cy, right - 32, rowTop + 2, 28, ROW_H - 4);
+}
+
+// 行尾的置顶按钮，在「正在进行」左边那一格
+static bool hitPin(int cx, int cy, int row) {
+    if (row < 0) return false;
+    REAL right = (REAL)(6 + CARD_W - 12);
+    REAL rowTop = (REAL)(LIST_TOP + row * ROW_H);
+    return inRect(cx, cy, right - 58, rowTop + 2, 26, ROW_H - 4);
 }
 
 // 点一下切换「正在进行」
@@ -2864,6 +3038,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
                 return 0;
             }
+            if (w == TIMER_TICK) {
+                InvalidateRect(h, nullptr, FALSE);     // 计时文本每秒走一格
+                return 0;
+            }
             if (w == TIMER_TRAY) {
                 if (!g_trayOpen) { KillTimer(h, TIMER_TRAY); return 0; }
                 if (GetTickCount() - g_trayIdle >= 2000) endTraySession();
@@ -3010,6 +3188,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 GetCursorPos(&cur);
                 int nx = g_winOrigin.x + (cur.x - g_dragOrigin.x);
                 int ny = g_winOrigin.y + (cur.y - g_dragOrigin.y);
+                // 拖的是卡片，但圆点得跟着走：收起时它要落回卡片现在的左上角，
+                // 不然卡片挪了一圈，圆点却留在原地。存窗口原点而不是可见圆角，
+                // 这样「展开 → 收起」来回几趟位置也不会一点点漂。
+                g_dotX = nx;
+                g_dotY = ny;
                 POINT pt{nx, ny};
                 if (g_desktopParent) ScreenToClient(g_desktopParent, &pt);
                 SetWindowPos(h, nullptr, pt.x, pt.y, 0, 0,
@@ -3166,7 +3349,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_pressPending = false;
                 ReleaseCapture();
                 if (!g_expanded && (hitPill(mx, my) || hitDot(mx, my) || g_pillFull == 0))
-                    expandWidget();
+                    expandWidget(true);
                 return 0;
             }
 
@@ -3177,6 +3360,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
             if (g_editing) {
                 if (btn == 1) { finishEdit(false); appSetWidgetEnabled(false); return 0; }
+                if (btn == 4) { finishEdit(true); toggleTopmost(); return 0; }
 
                 if (g_pickingDate) {
                     int hit = hitCalendar(cx, cy);
@@ -3234,6 +3418,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
 
             if (btn == 1) { appSetWidgetEnabled(false); return 0; }   // 关掉悬浮清单，不是退出程序
+            if (btn == 4) { toggleTopmost(); return 0; }
             if (btn == 2) { startEdit(); return 0; }
             if (btn == 3) { openFullApp(); return 0; }
 
@@ -3256,6 +3441,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         SetTimer(h, TIMER_SETTLE, 700, nullptr);
 
                         InvalidateRect(h, nullptr, FALSE);
+                    } else if (hitPin(cx, cy, row)) {
+                        wstring pid = g_tasks[idx].id;
+                        bool on = !g_tasks[idx].pinned;
+                        pinTask(pid, on);
                     } else if (hitProgress(cx, cy, row)) {
                         toggleStart(g_tasks[idx]);
                     } else if (!g_tasks[idx].links.empty()) {

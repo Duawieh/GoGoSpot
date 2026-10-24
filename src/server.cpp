@@ -1,4 +1,4 @@
-// GoGoSpot 本地服务：托管 web/ 静态文件，用 REST 接口读写 data/tasks.json，
+// GoGoSpot 后台：托管 web/ 静态文件，用 REST 接口读写 data/tasks.json，
 // 覆盖写入前自动备份（最多 40 份）。纯 Winsock2 实现，不依赖第三方库。
 
 #define WIN32_LEAN_AND_MEAN
@@ -1397,6 +1397,60 @@ static void sweepOverdueRepeating() {
     if (changed) saveTasksRoot(root);
 }
 
+// 从任务对象里取一个字符串 / 数字字段，取不到给默认值
+static string strField(const JVal& t, const char* key) {
+    JVal* v = const_cast<JVal&>(t).get(key);
+    return (v && v->kind == JVal::Str) ? v->str : string();
+}
+static long long numField(const JVal& t, const char* key) {
+    JVal* v = const_cast<JVal&>(t).get(key);
+    return (v && v->kind == JVal::Num) ? (long long)v->num : 0;
+}
+
+// 进行中的任务走到 100%（时间进度用完）就发一条系统通知。
+// 起始时间的算法和悬浮清单、控制台保持同一套：min(点下去的时刻, 截止 - 预估)。
+static void sweepTimerDone() {
+    // 同一次计时只通知一次。key 用 id#开始时刻，重开计时就是新的 key。
+    // 第一次扫只登记不通知：程序刚起来时已经到 100% 的那些不算「刚走完」。
+    static std::vector<string> told;
+    static bool primed = false;
+
+    std::lock_guard<std::mutex> lk(gDataMutex);
+
+    JVal root;
+    if (!loadTasksRoot(root)) return;
+    JVal* tasks = root.get("tasks");
+    if (!tasks || tasks->kind != JVal::Arr) return;
+
+    long long now = nowUnixMs();
+    for (auto& t : tasks->arr) {
+        if (t.kind != JVal::Obj) continue;
+
+        long long started = numField(t, "startedAt");
+        long long est = numField(t, "estimate") * 60000LL;
+        if (started <= 0 || est <= 0) continue;      // 没在进行，或者没填预估
+
+        long long start = started;
+        long long dueMs = dueToUnixMs(dueOf(t));
+        if (dueMs > 0 && dueMs - est < start) start = dueMs - est;
+        if (now - start < est) continue;             // 还没走完
+
+        string key = strField(t, "id") + "#" + std::to_string(started);
+        bool seen = false;
+        for (size_t i = 0; i < told.size(); ++i) {
+            if (told[i] == key) { seen = true; break; }
+        }
+        if (seen) continue;
+        if (told.size() > 500) told.clear();          // 别无限长，真到这一步清空重来也不碍事
+        told.push_back(key);
+        if (!primed) continue;
+
+        wstring msg = L"【" + u8tow(strField(t, "title")) + L"】计时结束";
+        appNotify(msg.c_str());
+    }
+    primed = true;
+}
+
 static Response apiToggle(const string& id) {
     if (id.empty()) return jsonError(400, "missing id");
 
@@ -1699,6 +1753,14 @@ static Response handleApi(const string& method, const string& path,
         if (!any) return jsonError(400, "no known key");
         return jsonOk(dump());
     }
+    // 悬浮清单标题栏上那个置顶按钮走这里：只改一个开关，和控制台改的是同一个值
+    if (path == "/api/topmost") {
+        if (method != "POST") return jsonError(405, "use POST");
+        auto on = q.find("on");
+        bool flag = (on == q.end()) ? true : (on->second != "0");
+        appSetTopmost(flag);
+        return jsonOk(string("\"topmost\":") + (flag ? "true" : "false"));
+    }
     if (path == "/api/tasks")    return apiTasks(method, body);
     if (path == "/api/widget")   return apiWidget();
     if (path == "/api/start") {
@@ -1879,7 +1941,7 @@ static void handleClient(SOCKET c) {
     closesocket(c);
 }
 
-// ---- 服务启动 ----
+// ---- 后台启动 ----
 
 // 探测端口上是否已有本程序实例：非阻塞 connect + select 短超时，避开防火墙丢 SYN。
 static bool portAlive(int port) {
@@ -1965,6 +2027,12 @@ static void pauseBeforeExit() {
     while ((c = getchar()) != '\n' && c != EOF) {}
 }
 
+// 这是个 -mwindows 程序，双击运行时没有控制台，printf 谁也看不见。
+// 启动失败必须弹个框，否则用户看到的就是「双击了，没反应」。
+static void showStartupError(const wstring& msg) {
+    MessageBoxW(nullptr, msg.c_str(), L"GoGoSpot 没能启动", MB_ICONERROR | MB_OK);
+}
+
 // ---- 启动 ----
 
 // 返回监听端口；返回 <0 表示不该继续（已有实例在跑，或启动失败）
@@ -2019,6 +2087,8 @@ int serverStart(int argc, char** argv) {
     if (!dirExists(gWebDir)) {
         printf("  [错误] 找不到前端目录: %s\n", wtou8(gWebDir).c_str());
         printf("  请确认 web 文件夹与 exe 位于同一目录。\n\n");
+        showStartupError(L"找不到前端目录：\n" + gWebDir +
+                         L"\n\n把 web 文件夹和 GoGoSpot.exe 放在同一层再运行。");
         pauseBeforeExit();
         return -1;
     }
@@ -2035,6 +2105,7 @@ int serverStart(int argc, char** argv) {
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         printf("  [错误] 网络初始化失败\n");
+        showStartupError(L"网络初始化失败（WSAStartup），这台机器上的 Winsock 可能有问题。");
         pauseBeforeExit();
         return -1;
     }
@@ -2065,6 +2136,11 @@ int serverStart(int argc, char** argv) {
     }
     if (listener == INVALID_SOCKET) {
         printf("  [错误] %d-%d 端口均被占用，无法启动。\n\n", portStart, portEnd);
+        wchar_t m[160];
+        swprintf(m, 160, L"%d-%d 端口都被占用了，后台没能启动。\n"
+                         L"可以用 --port 指定一个别的端口，比如 GoGoSpot.exe --port 8800",
+                 portStart, portEnd);
+        showStartupError(m);
         WSACleanup();
         pauseBeforeExit();
         return -1;
@@ -2075,7 +2151,7 @@ int serverStart(int argc, char** argv) {
 
     printf("  数据文件: %s\n", wtou8(gDataFile).c_str());
     printf("  备份目录: %s\n", wtou8(gBackupDir).c_str());
-    printf("  服务地址: http://127.0.0.1:%d/\n", port);
+    printf("  后台地址: http://127.0.0.1:%d/\n", port);
 
     if (wantBrowser) {
         std::thread([port]() {
@@ -2089,6 +2165,14 @@ int serverStart(int argc, char** argv) {
         for (;;) {
             Sleep(20000);
             sweepOverdueRepeating();
+        }
+    }).detach();
+
+    // 每 5 秒看一次有没有任务计时走完，走完就发系统通知
+    std::thread([]() {
+        for (;;) {
+            Sleep(5000);
+            sweepTimerDone();
         }
     }).detach();
 

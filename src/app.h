@@ -1,4 +1,4 @@
-// GoGoSpot 内部接口：服务端、悬浮清单、程序外壳编在同一个 exe 里，
+// GoGoSpot 内部接口：后台、悬浮清单、程序外壳编在同一个 exe 里，
 // 这里只放三者共享的符号。
 
 #ifndef GOGOSPOT_APP_H
@@ -13,11 +13,11 @@
 // ---- 版本 ----
 
 // 版本号只在这里改一处：/api/health、/api/info 和命令行横幅都读它
-static const char* const GOGOSPOT_VERSION = "1.0.3";
+static const char* const GOGOSPOT_VERSION = "1.0.5";
 
 // ---- 日期 ----
 
-// 某年某月有多少天。服务端校验 due、悬浮清单画月历都走这一份，别再各写一遍
+// 某年某月有多少天。后台校验 due、悬浮清单画月历都走这一份，别再各写一遍
 inline int daysOfMonth(int y, int m) {
     static const int d[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     if (m < 1 || m > 12) return 0;
@@ -27,14 +27,14 @@ inline int daysOfMonth(int y, int m) {
 
 // ---- 端口 ----
 
-// 端口不固定：服务从 8765 往上绑第一个能绑的，悬浮清单按同一区间反查。
+// 端口不固定：后台从 8765 往上绑第一个能绑的，悬浮清单按同一区间反查。
 static const int PORT_SCAN_START = 8765;
 static const int PORT_SCAN_COUNT = 32;                                      // 最多往上试 32 个
 static const int PORT_SCAN_END   = PORT_SCAN_START + PORT_SCAN_COUNT - 1;   // 8796
 
 // ---- server.cpp ----
 
-// 启动本地服务：绑端口、写 .port、后台线程跑 accept。
+// 启动后台：绑端口、写 .port、起线程跑 accept。
 // 返回监听端口；<0 表示不该继续（已有实例或启动失败）。
 int  serverStart(int argc, char** argv);
 void serverStop();
@@ -70,7 +70,11 @@ void drawMark(Gdiplus::Graphics& g, float cx, float cy, float box,
 
 // ---- main.cpp ----
 
-// 退出整个程序（含服务线程）
+// 弹一条系统通知。走托盘图标的气泡，Win10 之后会进通知中心；
+// 任何线程都能调，内部只做一次 Shell_NotifyIcon。
+void appNotify(const wchar_t* text);
+
+// 退出整个程序（含后台线程）
 void appQuit();
 
 #endif // GOGOSPOT_APP_H
