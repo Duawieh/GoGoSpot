@@ -195,6 +195,11 @@ static int   g_winH = WIN_H;
 static int   g_surfW = WIN_W;
 static int   g_surfH = WIN_H;
 
+// 展开那一刻圆点在哪。卡片贴边时会翻到另一侧，收起要回到圆点原位，
+// 不然开合几次圆点就顺着屏幕漂走了。
+static int   g_dotX = 0;
+static int   g_dotY = 0;
+
 // 窄条当前宽度（设备像素），TIMER_SLIDE 每帧推向 g_pillTarget，所以拉出缩回都是滑的。
 static int   g_pillW      = 0;
 static int   g_pillFull   = 0;      // 完全展开时的宽度，0 表示没有可显示的任务
@@ -1427,6 +1432,27 @@ static void paintRowBar(Graphics& g, const RectF& rowR, REAL ratio, Color pc, RE
     g.FillPath(&lg, &fp);
 }
 
+// 置顶标记：一个上窄下宽的图钉头加一根针，和控制台那个 SVG 的轮廓一致。
+// 11px 画不出原图那圈圆角，远看是同一个形状就够了。
+static void paintPin(Graphics& g, REAL cx, REAL cy, REAL k, Color col) {
+    PointF head[4] = {
+        { cx - 1.9f * k, cy - 4.8f * k },
+        { cx + 1.9f * k, cy - 4.8f * k },
+        { cx + 3.5f * k, cy - 1.0f * k },
+        { cx - 3.5f * k, cy - 1.0f * k },
+    };
+    GraphicsPath p;
+    p.AddPolygon(head, 4);
+    roundRect(p, RectF(cx - 2.5f * k, cy - 6.0f * k, 5.0f * k, 1.5f * k), 0.6f * k);
+    SolidBrush b(col);
+    g.FillPath(&b, &p);
+
+    Pen needle(col, 1.3f * k);
+    needle.SetStartCap(LineCapRound);
+    needle.SetEndCap(LineCapRound);
+    g.DrawLine(&needle, cx, cy - 1.0f * k, cx, cy + 3.6f * k);
+}
+
 // 画一行任务。dx 是横向偏移（勾掉后往右滑用），alpha 是整体透明度。
 static Color fadeCol(const Color& c, REAL a) {
     REAL v = (REAL)c.GetA() * a;
@@ -1502,6 +1528,15 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     REAL titleX = rowR.X + 38;
     REAL titleW = rowR.Width - 38 - 10 - 30;   // 右边留给「正在进行」
 
+    // 置顶的行在勾选框右边挂个图钉，和控制台那个同色同形；
+    // 没有它的话，一条 30 天后截止的任务排在最前面会让人以为排序坏了
+    if (t.pinned) {
+        paintPin(g, rowR.X + 33.5f, rowY + 19.0f, 1.0f,
+                 fadeCol(checked ? C_TEXT_FAINT : C_ACCENT, alpha));
+        titleX += 13;
+        titleW -= 13;
+    }
+
     // 挂了材料的行，标题用强调色：一眼能看出点它能跳过去
     Color titleCol = checked ? C_TEXT_FAINT : (t.links.empty() ? C_TEXT : C_ACCENT);
     drawText(g, t.title, bodyFont(), RectF(titleX, rowY + 7, titleW, 21),
@@ -1540,12 +1575,13 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
         }
     }
 
-    // 第二行固定两段：先截止、后预估，没设的用 -- 占位，位置才对得齐
+    // 第二行：有截止就写截止，有预估就写预估，两样都没有就整行不画。
+    // 原来两段都用 -- 占位，想让中间那个 · 对齐，可整行是一串文本左对齐拼出来的，
+    // 占位并没对齐任何东西，只剩一排「-- · --」占着地方。
     wstring meta = dueText(t);
-    if (meta.empty()) meta = L"--";
     wstring dur = shortDuration(t.estimate);
-    if (dur.empty()) dur = L"--";
-    meta += L"  ·  " + dur;
+    if (!meta.empty() && !dur.empty()) meta += L"  ·  " + dur;
+    else if (meta.empty()) meta = dur;
     if (!meta.empty()) {
         Color mc = (u == URG_NONE) ? C_TEXT_FAINT
                  : (u == URG_RED ? Color(255, 255, 150, 170) : Color(255, 250, 205, 146));
@@ -1726,14 +1762,16 @@ static void paint(HDC dc) {
     g.Restore(listState);
 
     if (maxScroll > 0 && !g_editing) {
-        REAL trackX = (REAL)(SHADOW + CARD_W - 7);
+        // 4px 宽、透明度也提一档：2~3px 压在深色玻璃上几乎看不见，
+        // 用户不一定知道列表还能往下滚
+        REAL trackX = (REAL)(SHADOW + CARD_W - 8);
         REAL trackTop = (REAL)(SHADOW + LIST_TOP + 6);
         REAL trackH = (REAL)(VISIBLE_ROWS * ROW_H - 12);
         REAL thumbH = trackH * VISIBLE_ROWS / (REAL)g_tasks.size();
         REAL thumbY = trackTop + (trackH - thumbH) * g_scroll / (REAL)maxScroll;
         GraphicsPath p;
-        roundRect(p, RectF(trackX, thumbY, 3, thumbH), 1.5f);
-        SolidBrush b(Color(50, 255, 255, 255));
+        roundRect(p, RectF(trackX, thumbY, 4, thumbH), 2.0f);
+        SolidBrush b(Color(72, 255, 255, 255));
         g.FillPath(&b, &p);
     }
 
@@ -2031,6 +2069,15 @@ static void captureBlurred(int x, int y) {
     g_bgReady = true;
 }
 
+// 隐藏窗口之后要等合成器真的换掉这一帧，再去抓屏；
+// 不等的话 BitBlt 拿到的还是卡片自己，毛玻璃里就会一直印着上一次的列表。
+static void flushComposition() {
+    typedef HRESULT (WINAPI *PFN_Flush)(void);
+    static PFN_Flush fn = reinterpret_cast<PFN_Flush>(reinterpret_cast<void*>(
+        GetProcAddress(LoadLibraryW(L"dwmapi.dll"), "DwmFlush")));
+    if (fn) fn();
+}
+
 // 抓玻璃背景之前必须先把窗口藏起来，否则抓屏抓到的是卡片自己，
 // 毛玻璃里就会一直留着上一次的列表。藏和现在同一个消息里做完，
 // 合成器来不及出帧，看不出闪。
@@ -2039,8 +2086,47 @@ static void recaptureBackground() {
     RECT wr{};
     GetWindowRect(g_hwnd, &wr);
     ShowWindow(g_hwnd, SW_HIDE);
+    flushComposition();
     captureBlurred(wr.left, wr.top);
     if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+}
+
+// 窗口一藏一显，系统的鼠标离开追踪会失效；重新注册一次，
+// 否则鼠标从窗口里直接移出去时收不到 WM_MOUSELEAVE，卡片会一直摊着。
+// 光标本来就在窗口外面时不要注册：TME_LEAVE 会立刻回一条 WM_MOUSELEAVE，
+// 从托盘叫出来的卡片会在半秒内自己收起。
+static void trackLeave() {
+    POINT pt{};
+    GetCursorPos(&pt);
+    RECT wr{};
+    GetWindowRect(g_hwnd, &wr);
+    if (!PtInRect(&wr, pt)) return;
+
+    TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, g_hwnd, 0};
+    TrackMouseEvent(&tme);
+}
+
+// 卡片按圆点位置摊开，但必须落在显示器工作区里：
+// 圆点贴在右下角时直接摊开会有一大半在屏幕外，底栏的「添加任务 / 打开控制台」就点不到了。
+// 放不下先翻到圆点的另一侧，还放不下再夹进工作区。
+static void resolveCardPos(int& x, int& y, int w, int h) {
+    POINT anchor{x + dotPixels() / 2, y + dotPixels() / 2};
+    HMONITOR mon = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!mon || !GetMonitorInfoW(mon, &mi)) return;
+
+    const RECT& work = mi.rcWork;
+    if (x + w > work.right) {
+        int flipped = x + dotPixels() - w;
+        x = (flipped >= work.left) ? flipped : (work.right - w);
+    }
+    if (y + h > work.bottom) {
+        int flipped = y + dotPixels() - h;
+        y = (flipped >= work.top) ? flipped : (work.bottom - h);
+    }
+    if (x < work.left) x = work.left;
+    if (y < work.top)  y = work.top;
 }
 
 static void expandWidget() {
@@ -2053,11 +2139,17 @@ static void expandWidget() {
 
     RECT wr{};
     GetWindowRect(g_hwnd, &wr);
+    g_dotX = wr.left;
+    g_dotY = wr.top;
+
+    int cardX = wr.left, cardY = wr.top;
+    resolveCardPos(cardX, cardY, g_winW, g_winH);
 
     // 先把窗口藏掉再抓：这时候屏幕上还是圆点，但圆点正好落在卡片左上角，
-    // 一起抓进去会在圆角外面留个模糊的圆
+    // 一起抓进去会在圆角外面留个模糊的圆。抓的位置得是卡片最终要占的那块。
     ShowWindow(g_hwnd, SW_HIDE);
-    captureBlurred(wr.left, wr.top);
+    flushComposition();
+    captureBlurred(cardX, cardY);
 
     g_expanded = true;
     g_fade = 0.0f;
@@ -2068,8 +2160,9 @@ static void expandWidget() {
     g_progAnim = 0.0f;
     kickProg();
 
-    placeWindow(wr.left, wr.top, g_winW, g_winH);
+    placeWindow(cardX, cardY, g_winW, g_winH);
     if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+    trackLeave();
 
     SetTimer(g_hwnd, TIMER_FADE, 16, nullptr);
     present();
@@ -2089,11 +2182,11 @@ static void collapseWidget() {
     g_fade = 1.0f;
     KillTimer(g_hwnd, TIMER_FADE);
 
-    RECT wr{};
-    GetWindowRect(g_hwnd, &wr);
     int d = dotPixels();
 
-    placeWindow(wr.left, wr.top, d + g_pillW, d);
+    // 回到展开前圆点的位置，而不是卡片现在的左上角：贴边时卡片会翻到另一侧，
+    // 按卡片位置收回去，圆点就跟着跑偏了
+    placeWindow(g_dotX, g_dotY, d + g_pillW, d);
     present();
 
     // 由托盘叫出来的，收起就算会话结束：层级和开关都要还原
@@ -2396,6 +2489,15 @@ static void grabKeyboardFocus() {
     }
 }
 
+// 有模态窗口开着（文件选择框、确认框、右键菜单）时鼠标必然在卡片外面，
+// 这段时间不能按「鼠标移开」处理，否则卡片会在对话框后面自己收起。
+static int g_modalDepth = 0;
+
+struct ModalScope {
+    ModalScope() { ++g_modalDepth; }
+    ~ModalScope() { --g_modalDepth; }
+};
+
 // 系统文件选择框：拿到完整本地路径
 static void pickLinkFile() {
     wchar_t buf[MAX_PATH] = {0};
@@ -2407,7 +2509,12 @@ static void pickLinkFile() {
     ofn.lpstrTitle = L"选择要打开的文件或材料";
     ofn.lpstrFilter = L"所有文件\0*.*\0\0";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-    if (!GetOpenFileNameW(&ofn)) return;
+    bool ok;
+    {
+        ModalScope ms;
+        ok = GetOpenFileNameW(&ofn) != FALSE;
+    }
+    if (!ok) return;
     if (g_editLinks.size() >= 8) return;
     g_editLinks.push_back(buf);
     InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -2679,6 +2786,18 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             if (w == TIMER_ZGUARD) {
                 keepAboveDesktop();
+
+                // 兜底：展开后鼠标从窗口里直接移出去，系统的离开追踪有时会漏
+                // （藏窗口抓背景、切 DPI 都会把它弄丢），这里按真实光标位置补一次判断。
+                // 托盘叫出来的卡片有自己的倒计时，编辑中、拖动中、有对话框开着都不算离开。
+                if (g_expanded && !g_editing && !g_dragging &&
+                    !g_trayOpen && g_modalDepth == 0) {
+                    POINT pt{};
+                    GetCursorPos(&pt);
+                    RECT wr{};
+                    GetWindowRect(h, &wr);
+                    if (!PtInRect(&wr, pt)) SetTimer(h, TIMER_COLLAPSE, 340, nullptr);
+                }
                 return 0;
             }
             if (w == TIMER_SLIDE) {
@@ -3145,8 +3264,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         if (lks.size() > 1) {
                             wstring msg = L"打开这条任务挂的 " + std::to_wstring(lks.size()) +
                                           L" 项材料？";
-                            if (MessageBoxW(h, msg.c_str(), L"GoGoSpot",
-                                            MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 0;
+                            int ans;
+                            {
+                                ModalScope ms;
+                                ans = MessageBoxW(h, msg.c_str(), L"GoGoSpot",
+                                                  MB_OKCANCEL | MB_ICONQUESTION);
+                            }
+                            if (ans != IDOK) return 0;
                         }
                         openLinks(lks);
                     }
@@ -3194,8 +3318,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             POINT pt;
             GetCursorPos(&pt);
             SetForegroundWindow(h);
-            int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            int cmd;
+            {
+                ModalScope ms;      // 菜单开着时鼠标可能已经移出卡片，别让它自己收起
+                cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
                                      pt.x, pt.y, 0, h, nullptr);
+            }
             DestroyMenu(menu);
 
             switch (cmd) {

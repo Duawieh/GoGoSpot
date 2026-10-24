@@ -13,7 +13,7 @@
 // ---- 版本 ----
 
 // 版本号只在这里改一处：/api/health、/api/info 和命令行横幅都读它
-static const char* const GOGOSPOT_VERSION = "1.0.2";
+static const char* const GOGOSPOT_VERSION = "1.0.3";
 
 // ---- 日期 ----
 

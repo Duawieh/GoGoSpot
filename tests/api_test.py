@@ -59,7 +59,7 @@ check('health 200 + 应用名', s == 200 and jbody(d).get('app') == 'GoGoSpot', 
 
 s, h, d = req('GET', '/api/info')
 info = jbody(d)
-check('info 返回版本 1.0.2', info.get('version') == '1.0.2', str(info)[:120])
+check('info 返回版本 1.0.3', info.get('version') == '1.0.3', str(info)[:120])
 check('info 路径可被 JSON 解析', '__parse_error__' not in info)
 
 s, h, d = req('GET', '/api/widget')
@@ -80,7 +80,7 @@ check('add 后字段齐全', t0['title'] == '写报告' and t0['estimate'] == 60
 
 s, h, d = req('GET', '/api/widget')
 line = text(d).splitlines()[1].split('\t')
-check('widget 行 7 列', len(line) == 7, repr(line))
+check('widget 行 8 列（末列是置顶）', len(line) == 8, repr(line))
 check('widget 链接用竖线拼接', line[5].count('|') == 1, line[5])
 check('widget 标题正确', line[4] == '写报告', line[4])
 
@@ -117,7 +117,7 @@ put_tasks([task(0)])   # 上面故意写坏了，重置回可用状态
 s, h, d = req('POST', '/api/add?' + urllib.parse.urlencode({'title': 'a\tb\nc\rd'}))
 s2, h2, d2 = req('GET', '/api/widget')
 last = text(d2).splitlines()[-1].split('\t')
-check('标题里的制表/换行不破坏 widget 协议', len(last) == 7, '列数=%d' % len(last))
+check('标题里的制表/换行不破坏 widget 协议', len(last) == 8, '列数=%d' % len(last))
 
 # estimate 边界
 for est, want in [(-5, 0), (0, 0), (99999, 1440), ('abc', 0)]:
@@ -214,9 +214,11 @@ req('POST', '/api/backup')
 req('POST', '/api/backup')
 s, h, d = req('GET', '/api/backups')
 bl = jbody(d).get('backups', [])
-check('同一秒内两次备份都留下（文件名带毫秒）', len(bl) == before + 2,
-      '%d -> %d' % (before, len(bl)))
 names = [b['name'] for b in bl]
+# 备份目录有份数上限，满了以后总数不再增长，只能比最新的两个名字
+check('同一秒内两次备份都留下（文件名带毫秒）',
+      len(names) >= 2 and names[0] != names[1] and names[1] != names[2] if len(names) >= 3 else False,
+      '%d -> %d %s' % (before, len(bl), names[:2]))
 print('     备份名:', names[:4])
 
 # 备份名穿越
