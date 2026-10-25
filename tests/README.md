@@ -1,8 +1,7 @@
 # 发布前冒烟
 
-先把隔离副本准备好：把 `GoGoSpot.exe` 和 `web/` 复制到一个临时目录（例如 `build/test/run/`），
-准备一份空的 `data/`，用 `--port 8765 --no-browser` 起起来。脚本只打 `127.0.0.1:8765`，
-不碰真实 `data/`。
+先把隔离副本准备好：把 `GoGoSpot.exe` 和 `web/` 复制到一个临时目录，准备一份空的 `data/`，
+用 `--port 8765 --no-browser` 起起来。脚本只打 `127.0.0.1:8765`，不碰真实 `data/`。
 
 ```
 # 接口：正常路径、畸形输入、并发、备份、重复派生
@@ -19,3 +18,22 @@ node tests/console3.js
 
 `verify-fixes.py` 里有两段各等 22 秒的逾期扫描，整套跑完约 1 分钟。控制台脚本会把截图写进
 `tests/shots/`，那个目录和 `tests/*.json` 都不入库。
+
+## 界面工具
+
+两个小工具分别单独编译，产物放临时目录即可，不要提交：
+
+```
+# 命中区自检：两个按钮的圆心与 hitPin / hitProgress 是否一致，有失败返回非零
+g++ -std=c++17 -O2 -static -municode tests/hit_test.cpp -o %TEMP%\hit_test.exe ^
+    -lwinhttp -lws2_32 -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -limm32 -lcomdlg32
+
+# 截图：按窗口标题抓悬浮清单，可选先投一条消息再等几毫秒
+g++ -std=c++17 -O2 -static -municode tests/cap.cpp -o %TEMP%\cap.exe ^
+    -lgdiplus -lgdi32 -luser32
+
+%TEMP%\cap.exe "GoGoSpot 悬浮清单" shot.png 0 300
+```
+
+`hit_test.cpp` 包含 `src/widget.cpp`，自带几个 `app*` 空实现补上外部接口依赖；
+`cap.cpp` 不依赖项目源码。
