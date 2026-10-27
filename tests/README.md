@@ -14,7 +14,13 @@ set NODE_PATH=%USERPROFILE%\.workbuddy-ai\binaries\node\workspace\node_modules
 node tests/console1.js
 node tests/console2.js
 node tests/console3.js
+node tests/est-unit.js          # 预估单位切换
 ```
+
+端口不写死：三个 Python 脚本读 `GOGOSPOT_PORT`（默认 8765），控制台脚本读 `GOGOSPOT_BASE`
+（默认 `http://127.0.0.1:8765/`）。正式实例开着的时候，把这两个变量指到隔离副本再跑。
+
+`est-unit.js` 会先 PUT 一份全新的任务列表，**只能打隔离副本**，默认端口是 8770。
 
 `verify-fixes.py` 里有两段各等 22 秒的逾期扫描，整套跑完约 1 分钟。控制台脚本会把截图写进
 `tests/shots/`，那个目录和 `tests/*.json` 都不入库。
