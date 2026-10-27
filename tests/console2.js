@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const BASE = 'http://127.0.0.1:8765/';
+const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8765/';
 const SHOTS = path.join(__dirname, 'shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 const results = [];
@@ -26,7 +26,20 @@ const tomorrow = (h) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+
+// 只准打隔离副本：8765 上要是正式实例，跑测试会把真实任务清空
+async function requireIsolated() {
+  const info = await fetch(BASE + 'api/info').then((r) => r.json());
+  const f = String(info.dataFile || '').replace(/\\/g, '/');
+  if (!/\/build\/test\//.test(f)) {
+    console.error('拒绝运行：数据目录是 ' + f + '，不是隔离副本。'
+      + '请用 --data build/test/... 另起一个实例再测。');
+    process.exit(2);
+  }
+}
+
 (async () => {
+  await requireIsolated();
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
 
   // ---------- 1. 控制台勾完成重复任务 ----------
@@ -60,8 +73,9 @@ const tomorrow = (h) => {
   const preventedClean = await fireUnload();
   check('刚打开、无改动时关页不拦', !preventedClean, 'defaultPrevented=' + preventedClean);
   await page.locator('#list .task .task-rename').click();
-  await page.fill('.task-edit', '改过的标题');
-  await page.press('.task-edit', 'Enter');
+  await page.waitForTimeout(250);
+  await page.fill('#editTitle', '改过的标题');
+  await page.click('#btnEditSave');
   await page.waitForTimeout(1200);
   const saveText = await page.textContent('#saveText');
   check('改动已落盘', /已保存/.test(saveText), saveText);

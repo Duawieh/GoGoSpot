@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const BASE = 'http://127.0.0.1:8765/';
+const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8765/';
 const SHOTS = path.join(__dirname, 'shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 
@@ -13,7 +13,20 @@ function check(name, ok, detail = '') {
   console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? '  | ' + detail : ''));
 }
 
+
+// 只准打隔离副本：8765 上要是正式实例，跑测试会把真实任务清空
+async function requireIsolated() {
+  const info = await fetch(BASE + 'api/info').then((r) => r.json());
+  const f = String(info.dataFile || '').replace(/\\/g, '/');
+  if (!/\/build\/test\//.test(f)) {
+    console.error('拒绝运行：数据目录是 ' + f + '，不是隔离副本。'
+      + '请用 --data build/test/... 另起一个实例再测。');
+    process.exit(2);
+  }
+}
+
 (async () => {
+  await requireIsolated();
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'zh-CN' });
   const page = await ctx.newPage();
@@ -38,8 +51,8 @@ function check(name, ok, detail = '') {
 
   // ---- 添加：带截止 / 预估 / 标签 / 链接
   await page.fill('#taskInput', '写发布说明');
-  await page.click('#estBtn');
-  await page.click('#estMenu [data-est="60"]');
+  await page.fill('#estInput', '60');
+  await page.locator('#estInput').blur();
   await page.click('#dueBtn');
   await page.waitForTimeout(120);
   await page.fill('#dueHH', '18');
@@ -71,12 +84,13 @@ function check(name, ok, detail = '') {
 
   // ---- 改名
   await page.locator('#list .task').nth(0).locator('.task-rename').click();
-  await page.waitForTimeout(150);
-  const edit = page.locator('.task-edit');
-  check('改名输入框出现并聚焦', await edit.count() === 1 && await edit.evaluate(n => document.activeElement === n));
-  await edit.fill('写 1.0.0 发布说明');
-  await page.press('.task-edit', 'Enter');
   await page.waitForTimeout(250);
+  const edit = page.locator('#editTitle');
+  check('编辑弹窗出现并聚焦标题',
+    (await page.isVisible('#editMask')) && await edit.evaluate(n => document.activeElement === n));
+  await edit.fill('写 1.0.0 发布说明');
+  await page.click('#btnEditSave');
+  await page.waitForTimeout(400);
   check('改名生效', (await page.locator('#list .task').nth(0).innerText()).includes('1.0.0'));
 
   // ---- 删除 + 撤销
@@ -95,7 +109,7 @@ function check(name, ok, detail = '') {
   check('搜索空态文案', (await page.locator('#empty').isVisible()) === false);
   await page.fill('#searchInput', 'zzz');
   await page.waitForTimeout(200);
-  check('无结果空态', (await page.textContent('#emptyTitle')).includes('没有匹配'));
+  check('无结果空态', (await page.textContent('#emptyTitle')) === '无匹配任务');
   await page.click('#btnClearSearch');
   await page.waitForTimeout(150);
 

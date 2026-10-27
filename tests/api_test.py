@@ -1,9 +1,10 @@
 # GoGoSpot 接口极限测试：正常路径 + 畸形输入 + 并发 + 重复任务派生
 # 只打 127.0.0.1:8765 的隔离实例，不碰真实 data/。
 
-import http.client, json, time, threading, urllib.parse, os, sys
+import http.client
+import os, json, time, threading, urllib.parse, os, sys
 
-HOST, PORT = '127.0.0.1', 8765
+HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8765'))
 RESULTS = []
 
 
@@ -59,7 +60,8 @@ check('health 200 + 应用名', s == 200 and jbody(d).get('app') == 'GoGoSpot', 
 
 s, h, d = req('GET', '/api/info')
 info = jbody(d)
-check('info 返回版本 1.0.3', info.get('version') == '1.0.3', str(info)[:120])
+import re
+check('info 返回版本号', re.match(r'^\d+\.\d+\.\d+$', str(info.get('version'))), str(info)[:120])
 check('info 路径可被 JSON 解析', '__parse_error__' not in info)
 
 s, h, d = req('GET', '/api/widget')
@@ -120,7 +122,7 @@ last = text(d2).splitlines()[-1].split('\t')
 check('标题里的制表/换行不破坏 widget 协议', len(last) == 8, '列数=%d' % len(last))
 
 # estimate 边界
-for est, want in [(-5, 0), (0, 0), (99999, 1440), ('abc', 0)]:
+for est, want in [(-5, 0), (0, 0), (99999, 99999), (200000, 99999), ('abc', 0)]:
     req('POST', '/api/add?' + urllib.parse.urlencode({'title': 'est ' + str(est), 'estimate': str(est)}))
     s, h, d = req('GET', '/api/tasks')
     got = jbody(d)['tasks'][-1]['estimate']
@@ -196,9 +198,13 @@ c.putheader('Content-Type', 'application/json')
 c.endheaders()
 c.send(b'10\r\n{"tasks":[]}\r\n0\r\n\r\n')
 r = c.getresponse()
-d = r.read()
+try:
+    d = r.read()
+except ConnectionResetError:
+    d = b''    # 服务端先 shutdown 再关，正常不会走到这里
 c.close()
-check('chunked 请求被拒绝（411 并说明原因）', r.status == 411, 'got %s %s' % (r.status, d[:60]))
+check('chunked 请求被拒绝（411 并带说明，不被 RST）',
+      r.status == 411 and b'chunked' in d, 'got %s %s' % (r.status, d[:70]))
 
 # 超长请求行
 try:
@@ -227,8 +233,9 @@ for n in ['../tasks.json', '..\\tasks.json', 'a/b.json', '', 'x.txt']:
     check('deletebackup name=%r → 400' % n, s == 400, 'got %s' % s)
 
 # 恢复一份被手工写坏的备份
-bad = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'test', 'run2',
-                   'data', 'backups', 'tasks-19990101-000000.json')
+_info = jbody(req('GET', '/api/info')[2])
+_bdir = _info.get('backupDir') or ''
+bad = os.path.join(_bdir.replace('/', os.sep), 'tasks-19990101-000000.json')
 os.makedirs(os.path.dirname(bad), exist_ok=True)
 open(bad, 'w', encoding='utf-8').write('{"tasks": [ broken')
 s, h, d = req('POST', '/api/restore?name=tasks-19990101-000000.json')

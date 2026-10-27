@@ -8,11 +8,7 @@ import socket
 import time
 import urllib.parse
 
-HOST, PORT = '127.0.0.1', 8765
-HERE = os.path.dirname(os.path.abspath(__file__))
-RUN = os.path.join(HERE, '..', 'build', 'test', 'run2')
-DATA = os.path.join(RUN, 'data', 'tasks.json')
-BACKUPS = os.path.join(RUN, 'data', 'backups')
+HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8765'))
 RESULTS = []
 
 
@@ -27,6 +23,12 @@ def req(method, path, body=None, headers=None, timeout=30):
     hd = dict((k.lower(), v) for k, v in r.getheaders())
     c.close()
     return r.status, hd, data
+
+
+# 数据文件与备份目录从 /api/info 取，不写死某个测试目录
+_info = json.loads(req('GET', '/api/info')[2].decode('utf-8'))
+DATA = (_info.get('dataFile') or '').replace('/', os.sep)
+BACKUPS = (_info.get('backupDir') or '').replace('/', os.sep)
 
 
 def check(name, ok, detail=''):

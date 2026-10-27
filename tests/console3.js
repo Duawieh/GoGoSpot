@@ -2,7 +2,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
-const BASE = 'http://127.0.0.1:8765/';
+const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8765/';
 const SHOTS = path.join(__dirname, 'shots');
 const results = [];
 function check(name, ok, detail = '') {
@@ -12,7 +12,20 @@ function check(name, ok, detail = '') {
 const mk = (i, title) => ({ id: 'k' + i, title, done: false, estimate: 30, due: null, tags: [],
   links: [], startedAt: 0, repeat: '', createdAt: new Date().toISOString(), completedAt: null });
 
+
+// 只准打隔离副本：8765 上要是正式实例，跑测试会把真实任务清空
+async function requireIsolated() {
+  const info = await fetch(BASE + 'api/info').then((r) => r.json());
+  const f = String(info.dataFile || '').replace(/\\/g, '/');
+  if (!/\/build\/test\//.test(f)) {
+    console.error('拒绝运行：数据目录是 ' + f + '，不是隔离副本。'
+      + '请用 --data build/test/... 另起一个实例再测。');
+    process.exit(2);
+  }
+}
+
 (async () => {
+  await requireIsolated();
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const ctx = await browser.newContext({ viewport: { width: 1200, height: 860 }, locale: 'zh-CN',
     acceptDownloads: true });

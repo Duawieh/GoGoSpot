@@ -1,7 +1,8 @@
 # 接口测试第二批：协议边界、备份、CSRF、并发、重复任务派生
-import http.client, json, socket, time, threading, urllib.parse, os
+import http.client
+import os, json, socket, time, threading, urllib.parse, os
 
-HOST, PORT = '127.0.0.1', 8765
+HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8765'))
 RESULTS = []
 
 
@@ -80,9 +81,13 @@ c.putheader('Content-Type', 'application/json')
 c.endheaders()
 c.send(b'10\r\n{"tasks":[]}\r\n0\r\n\r\n')
 r = c.getresponse()
-d = r.read()
+try:
+    d = r.read()
+except ConnectionResetError:
+    d = b''    # 服务端先 shutdown 再关，正常不会走到这里
 c.close()
-check('chunked 请求被拒绝（411 并说明原因）', r.status == 411, 'got %s %s' % (r.status, d[:60]))
+check('chunked 请求被拒绝（411 并带说明，不被 RST）',
+      r.status == 411 and b'chunked' in d, 'got %s %s' % (r.status, d[:70]))
 
 # 超长请求行
 try:
@@ -105,8 +110,8 @@ for n in ['../tasks.json', '..\\tasks.json', 'a/b.json', '', 'x.txt']:
     s, h, d = req('POST', '/api/deletebackup?name=' + urllib.parse.quote(n))
     check('deletebackup name=%r → 400' % n, s == 400, 'got %s' % s)
 
-bad = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'test', 'run2',
-                   'data', 'backups', 'tasks-19990101-000000.json')
+_info = jbody(req('GET', '/api/info')[2])
+bad = os.path.join((_info.get('backupDir') or '').replace('/', os.sep), 'tasks-19990101-000000.json')
 os.makedirs(os.path.dirname(bad), exist_ok=True)
 open(bad, 'w', encoding='utf-8').write('{"tasks": [ broken')
 s, h, d = req('POST', '/api/restore?name=tasks-19990101-000000.json')
