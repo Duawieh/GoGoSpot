@@ -94,31 +94,35 @@ void appNotify(const wchar_t* text) {
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
-static void showTrayMenu(HWND h) {
-    HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, 1, L"打开控制台");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 2, L"退出");
+static void showTrayMenu() {
+    // 悬浮清单停用后窗口完全隐藏，仅可通过托盘菜单重新启用
+    bool on = appWidgetEnabled();
+    bool topmost = appTopmostEnabled();
 
     POINT pt{};
     GetCursorPos(&pt);
-    SetForegroundWindow(h);
-    int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                             pt.x, pt.y, 0, h, nullptr);
-    DestroyMenu(menu);
-    PostMessageW(h, WM_NULL, 0, 0);     // 让菜单正常消失的老规矩
 
+    MenuItemDef items[5];
+    int n = 0;
+    items[n++] = { L"打开控制台", 1, true };
+    items[n++] = { on ? L"关闭悬浮清单" : L"启用悬浮清单", 3, false };
+    items[n++] = { topmost ? L"悬浮清单取消置顶" : L"悬浮清单置顶", 4, true };
+    items[n++] = { L"退出", 2, false };
+
+    int cmd = widgetPopupMenu(pt.x, pt.y, items, n);
     if (cmd == 1) openFullApp();
     else if (cmd == 2) appQuit();
+    else if (cmd == 3) appSetWidgetEnabled(!appWidgetEnabled());
+    else if (cmd == 4) appSetTopmost(!appTopmostEnabled());
 }
 
 static LRESULT CALLBACK TrayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_TRAY_CB:
             if (l == WM_RBUTTONUP || l == WM_CONTEXTMENU) {
-                showTrayMenu(h);
+                showTrayMenu();
             } else if (l == WM_LBUTTONUP) {
-                // 点一下就把清单临时摊开，双击暂时不做别的
+                // 单击临时展开清单；双击暂无行为
                 widgetTrayOpen();
             }
             return 0;
@@ -142,7 +146,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     GdiplusStartup(&token, &gsi, nullptr);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    // 已有实例：按悬浮清单开关决定要不要开浏览器，然后返回 -1，不再起第二套窗口
+    // 已有实例：根据悬浮清单开关决定是否打开浏览器，随后返回 -1，不再创建第二套窗口
     int port = serverStart(__argc, __argv);
     if (port < 0) {
         CoUninitialize();
@@ -166,7 +170,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     int small = GetSystemMetrics(SM_CXSMICON);
     g_icon = makeTrayIcon(small > 0 ? small : 16);
     if (!g_icon) {
-        // 现画失败就用 exe 里嵌的图标
+        // 动态绘制失败时使用程序资源中的图标
         g_icon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
                                    small, small, LR_DEFAULTCOLOR);
     }
@@ -181,12 +185,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     }
 
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
-    if (widget) DestroyWindow(widget);          // 顺手把窗口位置存下来
+    if (widget) DestroyWindow(widget);          // 销毁窗口前保存其位置
     if (g_trayWnd) DestroyWindow(g_trayWnd);
     if (g_icon && g_icon != LoadIconW(nullptr, MAKEINTRESOURCEW(32512))) DestroyIcon(g_icon);
 
     serverStop();
     CoUninitialize();
     GdiplusShutdown(token);
-    return 0;
+
+    // 不用 return 走静态析构：GDI+ 已经关掉，字体等静态对象再析构会访问已释放的资源，
+    // 进程会以段错误退出。界面已经清理干净，剩下交给系统回收
+    fflush(stdout);
+    ExitProcess(0);
 }

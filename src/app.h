@@ -13,11 +13,11 @@
 // ---- 版本 ----
 
 // 版本号只在这里改一处：/api/health、/api/info 和命令行横幅都读它
-static const char* const GOGOSPOT_VERSION = "1.0.5";
+static const char* const GOGOSPOT_VERSION = "1.0.6";
 
 // ---- 日期 ----
 
-// 某年某月有多少天。后台校验 due、悬浮清单画月历都走这一份，别再各写一遍
+// 指定年月的天数。后台校验 due 与悬浮清单绘制月历共用此实现，不再各自维护。
 inline int daysOfMonth(int y, int m) {
     static const int d[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     if (m < 1 || m > 12) return 0;
@@ -29,7 +29,7 @@ inline int daysOfMonth(int y, int m) {
 
 // 端口不固定：后台从 8765 往上绑第一个能绑的，悬浮清单按同一区间反查。
 static const int PORT_SCAN_START = 8765;
-static const int PORT_SCAN_COUNT = 32;                                      // 最多往上试 32 个
+static const int PORT_SCAN_COUNT = 32;                                      // 最多扫描后续 32 个端口
 static const int PORT_SCAN_END   = PORT_SCAN_START + PORT_SCAN_COUNT - 1;   // 8796
 
 // ---- server.cpp ----
@@ -60,8 +60,17 @@ HWND widgetCreate(bool enabled);
 void widgetNotifyEnabled(bool on);
 void widgetNotifyTopmost(bool on);
 
-// 托盘点一下：临时展开并置顶，2 秒没交互就收回去
+// 单击托盘图标：临时展开并置顶，2 秒无交互后收起
 void widgetTrayOpen();
+
+// 右键菜单：单独一个置顶分层窗口，Z 序独立于悬浮清单。
+// 返回选中项的 cmd；点空白处或按 Esc 关闭时返回 0。使用屏幕坐标，并按屏幕边界调整菜单位置。
+struct MenuItemDef {
+    const wchar_t* label;
+    int cmd;
+    bool gap;         // 这一项下面画一条分隔线
+};
+int widgetPopupMenu(int screenX, int screenY, const MenuItemDef* items, int count);
 
 // 画 GoGoSpot 标识（3/4 圆弧 + 圆点），以 (cx,cy) 为中心、box 为外框边长。
 // brush 为空用品牌渐变，传实色刷子画单色版。
