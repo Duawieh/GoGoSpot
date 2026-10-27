@@ -14,9 +14,8 @@ const el = {
   taskInput:    $('taskInput'),
   btnAdd:       $('btnAdd'),
   estField:     $('estField'),
-  estBtn:       $('estBtn'),
-  estLabel:     $('estLabel'),
-  estMenu:      $('estMenu'),
+  estInput:     $('estInput'),
+  estUnitBtn:   $('estUnitBtn'),
   dueField:     $('dueField'),
   dueBtn:       $('dueBtn'),
   dueLabel:     $('dueLabel'),
@@ -47,7 +46,9 @@ const el = {
   widgetNote:   $('widgetNote'),
   linkField:    $('linkField'),
   linkInput:    $('linkInput'),
-  btnPasteLink: $('btnPasteLink'),
+  btnAddLink:   $('btnAddLink'),
+  btnPick:      $('btnPick'),
+  pickPop:      $('pickPop'),
   linkChips:    $('linkChips'),
   btnStart:     $('btnStart'),
   swTopmost:    $('swTopmost'),
@@ -62,6 +63,16 @@ const el = {
   backupList:   $('backupList'),
   backupCount:  $('backupCount'),
   toastWrap:    $('toastWrap'),
+  composer:     $('composer'),
+  composerMeta: $('composerMeta'),
+  tagsField:    $('tagsField'),
+  editMask:     $('editMask'),
+  editTitle:    $('editTitle'),
+  editFields:   $('editFields'),
+  editChips:    $('editChips'),
+  btnEditClose: $('btnEditClose'),
+  btnEditCancel:$('btnEditCancel'),
+  btnEditSave:  $('btnEditSave'),
 };
 
 const state = {
@@ -72,17 +83,15 @@ const state = {
   dueTime: '23:59',
   query: '',
   tag: null,
-  editingId: null,
-  cancelEdit: false,
   saveTimer: null,
   prevIds: null,
   loaded: false,
-  loadError: false,          // 读不出任务文件时，禁止回写，免得把原数据覆盖成空表
-  links: [],                 // 正在添加的这条任务的「从这里开始」
+  loadError: false,          // 读不出任务文件时，禁止回写，避免原数据被空列表覆盖
+  links: [],                 // 正在编辑任务的关联材料
   repeat: '',                // 重复规则：'' / daily / weekly / biweekly / monthly
 };
 
-// 同一时刻只允许一份保存在途，否则后发的旧数据可能盖掉新数据
+// 同一时刻只允许一份保存在途，避免较晚完成的旧请求覆盖新数据
 const saveGate = { inflight: false, again: false };
 
 /* ---------------------------------------------------------------- 工具 */
@@ -119,7 +128,7 @@ function parseDue(due) {
 }
 
 // 紧急分级，和悬浮清单用同一套线：
-// 剩余 <= min(预估时长, 12 小时) 是红色，一天以内是黄色，再远就不标。
+// 剩余时间不超过 min(预估时长, 12 小时) 显示红色，一天以内显示黄色，更远不标记。
 function urgencyOf(t) {
   if (!t.due || t.done) return 0;
   const dt = parseDue(t.due);
@@ -174,15 +183,20 @@ function parseTags(raw) {
     .slice(0, 6);
 }
 
+// 显示只到分钟：拆成 天 / 小时 / 分 三段整数，不出现 1.5 天，也不出现秒。
+// 存储值精确到秒，此处四舍五入到分钟；不足一分钟按 1 分显示，避免出现“0 分”
 function fmtDuration(min) {
   if (!min) return '';
-  if (min < 60) return min + ' 分钟';
-  if (min >= 1440) {
-    const d = min / 1440;
-    return (Number.isInteger(d) ? d : d.toFixed(1)) + ' 天';
-  }
-  const h = min / 60;
-  return (Number.isInteger(h) ? h : h.toFixed(1)) + ' 小时';
+  let total = Math.round(min);
+  if (total < 1) total = 1;
+  const d = Math.floor(total / 1440);
+  const h = Math.floor((total % 1440) / 60);
+  const m = total % 60;
+  const out = [];
+  if (d) out.push(d + ' 天');
+  if (h) out.push(h + ' 小时');
+  if (m) out.push(m + ' 分');
+  return out.join(' ');
 }
 
 function fmtSize(n) {
@@ -199,29 +213,29 @@ function normalize(t) {
     title: String(src.title || '').slice(0, 500),
     done: !!src.done,
     estimate: Number.isFinite(Number(src.estimate)) && Number(src.estimate) > 0
-      ? Math.min(Math.round(Number(src.estimate)), 24 * 60)
+      ? Math.min(Math.round(Number(src.estimate) * 60) / 60, EST_MAX)
       : 0,
     due,
     tags: Array.isArray(src.tags) ? src.tags.filter((x) => typeof x === 'string').slice(0, 6) : [],
     links: Array.isArray(src.links)
-      ? src.links.filter((x) => typeof x === 'string' && x.trim()).slice(0, 8)
+      ? src.links.map(normalizeLink).filter(Boolean).slice(0, 8)
       : [],
     startedAt: Number.isFinite(Number(src.startedAt)) && Number(src.startedAt) > 0
       ? Number(src.startedAt)
       : 0,
     pinned: !!src.pinned,
-    // 没有截止时间的重复永远等不到下一期，导入的旧数据也按这条规矩清掉
+    // 无截止时间的重复任务无法生成下一期；导入数据也按同一规则清除重复设置
     repeat: due && REPEATS.some((r) => r.key === src.repeat) ? src.repeat : '',
     createdAt: src.createdAt || new Date().toISOString(),
     completedAt: src.completedAt || null,
   };
 }
 
-// 只有对象才算一条任务：老数据或手改过的文件里可能混进数字，
-// 拿它当任务会画出一行空白，看着像丢了内容
+// 只有对象才算一条任务：历史数据或人工编辑的文件中可能包含数字；
+// 将其作为任务渲染会生成空白行，造成任务缺失的误判
 const isTaskObject = (t) => !!t && typeof t === 'object' && !Array.isArray(t);
 
-// id 会直接进 data-* 属性。导入的文件可能带引号、尖括号，先只留安全字符；
+// id 会直接进 data-* 属性。导入的文件可能带引号、尖括号，仅保留安全字符；
 // 空的和重名的重新发一个，避免两条任务共用一个 id。
 function sanitizeIds(list) {
   const used = new Set();
@@ -244,7 +258,7 @@ function setSaveState(kind, text) {
 }
 
 function scheduleSave() {
-  if (state.loadError) {          // 读不出来的状态下回写，会把原数据整份覆盖掉
+  if (state.loadError) {          // 读取失败时禁止回写，避免覆盖原数据
     setSaveState('error', '读取失败，改动暂不保存');
     return;
   }
@@ -316,7 +330,7 @@ async function loadTasks() {
     state.loadError = false;
     setSaveState('ok', '已同步');
   } catch (e) {
-    // 保留内存里已有的列表，同时锁住保存：坏文件不该被一份空表覆盖
+    // 保留内存里已有的列表，同时锁住保存：避免损坏文件被空列表覆盖
     state.loadError = true;
     setSaveState('error', '读取失败');
     toast('读取任务失败：' + e.message);
@@ -326,7 +340,7 @@ async function loadTasks() {
 
 /* ---------------------------------------------------------------- 渲染 */
 
-// 和悬浮清单共用一套排序：先看置顶，再看截止时间，没截止的垫底；
+// 和悬浮清单共用一套排序：依次按置顶状态和截止时间排序，无截止时间的任务排在末尾；
 // 完全相同的保持原来的先后（sort 是稳定的）
 function byPinThenDue(a, b) {
   if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
@@ -369,8 +383,8 @@ function visibleTasks() {
   return arr;
 }
 
-// 正在进行：预计最晚开始 = 截止 - 预计用时；起始 = min(点下去的时刻, 最晚开始)
-// 没填预估的任务算不出占比，界面用固定 60% 的紫色表示「在做，但不知道还剩多少」
+// 正在进行：预计最晚开始 = 截止 - 预计用时；起始 = min(计时开始时刻, 最晚开始)
+// 未填写预估时长的任务无法计算进度比例，界面以固定 60% 紫色填充表示运行状态
 function hasEstimate(t) {
   return t.estimate > 0;
 }
@@ -386,7 +400,7 @@ function progressRatio(t) {
 
 const RING_C = 2 * Math.PI * 9;      // 半径 9 的周长
 
-// 进行中 → 常显「停止」按钮；没进行 → 悬停才出现的「正在进行」按钮
+// 进行中：常显“停止”按钮；未进行：悬停时显示“正在进行”按钮
 function startButton(t) {
   const urg = urgencyOf(t);
   const id = esc(t.id);
@@ -410,8 +424,8 @@ function urgencyCls(t) {
   return u === 2 ? 'is-red' : (u === 1 ? 'is-yellow' : 'is-purple');
 }
 
-// 行顶那条直进度条。颜色按「用时占比」分档：<=60% 绿，<=80% 黄，再往上红。
-// 没填预估的算不出占比：固定八成，颜色跟紧急程度走。
+// 行顶那条直进度条。颜色按“用时占比”分档：<=60% 绿，<=80% 黄，再往上红。
+// 未填写预估时长时固定填充 80%，颜色按紧急程度确定。
 function progressBar(t) {
   if (!t.startedAt) return '';
   const id = esc(t.id);
@@ -453,11 +467,9 @@ function taskHTML(t) {
   if (t.repeat) meta.push(`<span class="m-rep">${esc(repeatLabel(t.repeat))}</span>`);
   for (const tag of t.tags) meta.push(`<span class="m-tag">${esc(tag)}</span>`);
 
-  const title = state.editingId === t.id
-    ? `<input class="task-edit" type="text" value="${esc(t.title)}" data-edit="${id}">`
-    : `<div class="task-title" data-title="${id}">${esc(t.title)}</div>`;
+  const title = `<div class="task-title" data-title="${id}">${esc(t.title)}</div>`;
 
-  // 挂了材料的任务，标题旁边给一个「从这里开始」的小图标
+  // 挂了材料的任务，标题旁边给一个“关联材料”的小图标
   const linkBtn = (t.links && t.links.length)
     ? `<button class="task-start" data-open="${id}" title="从这里开始：${t.links.length} 项材料">
          <svg viewBox="0 0 24 24" width="14" height="14" fill="none">
@@ -491,7 +503,7 @@ function taskHTML(t) {
         </svg>
       </button>
       ${startButton(t)}
-      <button class="task-rename" data-edit="${id}" aria-label="改名" title="改名">
+      <button class="task-rename" data-edit="${id}" aria-label="编辑任务" title="编辑任务">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none">
           <path d="M4 20h4L19 9a2.5 2.5 0 00-3.5-3.5L4.5 16.5 4 20z" stroke="currentColor"
                 stroke-width="1.7" stroke-linejoin="round"/>
@@ -525,7 +537,7 @@ function playRowMove(before) {
     if (Math.abs(dy) < 1) return;
     n.style.transition = 'none';
     n.style.transform = `translateY(${dy}px)`;
-    void n.offsetHeight;              // 先把起点落定，否则会和后面的过渡合并成一帧
+    void n.offsetHeight;              // 先完成起始布局计算，避免与后续过渡合并为同一帧
     n.style.transition = '';
     n.style.transform = '';
   });
@@ -548,7 +560,7 @@ function render() {
   const ids = new Set(items.map((t) => t.id));
 
   // 行数一多，captureRows 的 getBoundingClientRect 会强制整页重排，
-  // 5000 条时光这一项就接近一秒。超过这个量级直接不播重排动画。
+  // 5000 条时该项耗时接近一秒；超过该量级不播放重排动画。
   const beforeRows = items.length > 300 ? new Map() : captureRows();
   el.list.innerHTML = items.map((t) => {
     let html = taskHTML(t);
@@ -587,42 +599,87 @@ function render() {
     : `共 ${total} 项 · ${pending} 项待办${loadText}${done ? ` · ${done} 项已完成` : ''}`;
   el.btnClearDone.disabled = done === 0;
 
-  // 编辑框聚焦
-  const editInput = el.list.querySelector('.task-edit');
-  if (editInput) {
-    editInput.focus();
-    const v = editInput.value;
-    editInput.setSelectionRange(v.length, v.length);
-  }
 }
 
 function emptyMessage() {
   if (state.loadError) {
-    return { title: '任务文件读取失败', sub: '改动不会写回磁盘。可以到设置里从历史备份恢复' };
+    return { title: '任务文件读取失败', sub: '改动不会写回磁盘。可在设置中从历史备份恢复' };
   }
-  if (state.query.trim()) return { title: '没有匹配的任务', sub: '换个关键词试试，或清空搜索框' };
-  if (state.tag) return { title: `标签 ${state.tag} 下没有任务`, sub: '点击标签可以取消筛选' };
-  if (state.view === 'done') return { title: '还没有完成的任务', sub: '完成一项后，它会归档到这里' };
-  if (state.view === 'today') return { title: '今天没有到期任务', sub: '给任务设置截止日期，就会出现在这里' };
-  if (state.view === 'pending') return { title: '待办清空了', sub: '所有任务都已完成，休息一下' };
-  return { title: '还没有任务', sub: '在上面输入框写下第一件事，按 Enter 添加' };
+  if (state.query.trim()) return { title: '无匹配任务', sub: '调整搜索关键词或清空搜索框' };
+  if (state.tag) return { title: `标签 ${state.tag} 下暂无任务`, sub: '选择标签以取消筛选' };
+  if (state.view === 'done') return { title: '暂无已完成任务', sub: '已完成任务将在此显示' };
+  if (state.view === 'today') return { title: '今日无到期任务', sub: '设置任务截止时间后将在此显示' };
+  if (state.view === 'pending') return { title: '暂无待办任务', sub: '所有任务均已完成' };
+  return { title: '暂无任务', sub: '输入任务标题，按 Enter 添加' };
 }
 
 /* ---------------------------------------------------------------- 操作 */
 
-function setEstimate(minutes) {
-  state.estimate = minutes || 0;
-  el.estLabel.textContent = state.estimate ? fmtDuration(state.estimate) : '预估时长';
-  el.estBtn.classList.toggle('is-empty', !state.estimate);
-  el.estMenu.querySelectorAll('[data-est]').forEach((b) => {
-    b.classList.toggle('is-on', Number(b.dataset.est) === state.estimate);
-  });
+// 预估时长：一个数字加一个单位（日 / 时 / 分），滚轮或点击换单位。
+// 允许小数（1.5 日等于 36 时）；存储按秒四舍五入，显示统一拆分为整数。
+const EST_MAX = 99999;               // 分钟，约 69 天
+const EST_UNITS = [
+  { label: '日', min: 1440 },
+  { label: '时', min: 60 },
+  { label: '分', min: 1 },
+];
+let estUnit = 2;                     // 当前单位下标，默认“分”
+let estRaw = '';                     // 编辑中的原始数字
+// 数字是用户自己打的，还是从已有任务回填的。
+// 自己打的：换单位只换乘数，2 分 → 2 时（用户的意思就是“2 时”）；
+// 回填的：换单位做换算，90 分 → 1.5 时。
+let estTyped = false;
+
+// 单位换算保留四位小数，避免往返转换导致精度损失：90 分 = 0.0625 日
+const trimNum = (n) => Math.round(n * 10000) / 10000;
+
+function paintEst() {
+  const typing = document.activeElement === el.estInput;
+  el.estInput.value = typing
+    ? estRaw
+    : (state.estimate ? fmtDuration(state.estimate) : '');
+  el.estUnitBtn.hidden = !typing;    // 单位只在编辑时露出来
+  el.estUnitBtn.textContent = EST_UNITS[estUnit].label;
 }
 
-function openEstMenu(open) {
-  el.estMenu.hidden = !open;
-  el.estField.classList.toggle('is-open', open);
-  el.estBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+function setEstimate(minutes) {
+  const n = Number(minutes) || 0;
+  // 按秒存储，以保留 0.5 分钟（30 秒）等精度
+  state.estimate = Math.min(Math.max(Math.round(n * 60) / 60, 0), EST_MAX);
+  paintEst();
+}
+
+// 可整除时选用较大单位：2160 分 → 1.5 日，45 分 → 45 分
+function beginEstEdit() {
+  const v = state.estimate;
+  estUnit = v && v % 1440 === 0 ? 0 : (v && v % 60 === 0 ? 1 : 2);
+  estRaw = v ? String(trimNum(v / EST_UNITS[estUnit].min)) : '';
+  estTyped = false;                  // 回填的数字，换单位要换算
+  paintEst();
+  el.estInput.select();
+}
+
+// 换单位：回填来的数字跟着换算（1.5 日 -> 36 时），
+// 用户自己打的数字原样留着，只换乘数（打 2 再点“时”就是 2 时）
+function shiftEstUnit(step) {
+  const next = (estUnit + step + EST_UNITS.length) % EST_UNITS.length;
+  const n = parseFloat(estRaw);
+  if (!estTyped && Number.isFinite(n)) {
+    const mins = n * EST_UNITS[estUnit].min;
+    estRaw = String(trimNum(mins / EST_UNITS[next].min));
+  }
+  estUnit = next;
+  paintEst();
+}
+
+// 按 Enter 提交后会触发失焦事件并产生第二次提交；将原始值更新为提交结果，
+// 确保重复计算一致并保留输入值
+function commitEstimate() {
+  const n = parseFloat(estRaw);
+  setEstimate(Number.isFinite(n) ? n * EST_UNITS[estUnit].min : 0);
+  estRaw = state.estimate
+    ? String(trimNum(state.estimate / EST_UNITS[estUnit].min))
+    : '';
 }
 
 /* ---------------------------------------------------------------- 截止时间 */
@@ -638,7 +695,7 @@ function parseYmd(s) {
   return new Date(y, m - 1, d);
 }
 
-// 和列表里那套口径一致：今天 / 明天 / 后天 / N 天后 / 月日
+// 与任务列表使用相同日期显示格式：今天 / 明天 / 后天 / N 天后 / 月日
 function dueLabelText() {
   if (!state.dueDate) return '截止时间';
 
@@ -728,7 +785,7 @@ function readClock() {
 function clearDue() {
   state.dueDate = '';
   state.dueTime = '23:59';
-  // 没有截止时间的重复任务永远等不到下一期，清截止就一并清掉重复
+  // 无截止时间的重复任务不会派生下一期，清除截止时间时同时清除重复设置
   if (state.repeat) {
     state.repeat = '';
     paintRepeatChips();
@@ -737,9 +794,34 @@ function clearDue() {
   openDuePop(false);
 }
 
-/* ---- 从这里开始：一条任务可以挂多个链接或本地文件 ---- */
+/* ---- 关联材料：一条任务可以挂多个链接或本地文件 ---- */
 
-// 只显示最后一段，长路径不至于把 chip 撑爆
+// 链接统一成 {url, protocol, call}：网址交给浏览器，本地路径在文件夹中显示。
+// 老数据只有一串字符串，这里按前缀补出 protocol / call
+function normalizeLink(x) {
+  const given = (x && typeof x === 'object' && !Array.isArray(x)) ? x : {};
+  const url = String(typeof x === 'string' ? x : (given.url || '')).trim();
+  if (!url) return null;
+  const web = /^https?:\/\//i.test(url);
+  const protocol = typeof given.protocol === 'string' && given.protocol
+    ? given.protocol
+    : (web ? (/^https:/i.test(url) ? 'https' : 'http') : 'file');
+  const call = typeof given.call === 'string' && given.call
+    ? given.call
+    : (protocol === 'file' ? 'explorer' : 'browser');
+  return { url, protocol, call };
+}
+
+// 将 file:///C:/a/b.docx 转为 C:\a\b.docx，其余原样返回
+function fromFileUri(u) {
+  const s = String(u || '');
+  if (!/^file:/i.test(s)) return s;
+  let p = s.replace(/^file:[/]{2,3}/i, '');
+  try { p = decodeURIComponent(p); } catch (e) { /* 保持原样 */ }
+  return p.replace(/\//g, '\\');
+}
+
+// 只显示最后一段，避免长路径超出 chip 宽度
 function shortLink(u) {
   let s = String(u).replace(/^file:[/][/][/]/i, '').replace(/\\/g, '/');
   const parts = s.split('/').filter(Boolean);
@@ -752,7 +834,9 @@ function paintRepeatChips() {
   const box = $('repeatChips');
   if (!box) return;
   box.querySelectorAll('[data-rep]').forEach((b) => {
-    b.classList.toggle('is-on', (b.dataset.rep || '') === (state.repeat || ''));
+    const on = (b.dataset.rep || '') === (state.repeat || '');
+    b.classList.toggle('is-on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
 }
 
@@ -765,24 +849,37 @@ function renderLinkChips() {
   const box = el.linkChips;
   if (!box) return;
   box.hidden = state.links.length === 0;
-  box.innerHTML = state.links.map((u, i) =>
-    `<span class="link-chip" title="${esc(u)}">` +
-      `<span class="link-chip-name">${esc(shortLink(u))}</span>` +
+  box.innerHTML = state.links.map((l, i) =>
+    `<span class="link-chip" title="${esc(l.url)}">` +
+      `<span class="link-chip-name">${esc(shortLink(l.url))}</span>` +
       `<button type="button" data-unlink="${i}" aria-label="移除">×</button>` +
     `</span>`).join('');
 }
 
+// 仅接受网址与绝对路径；其余视为无效输入，避免被当作 file 链接写入
+function looksLikeLink(u) {
+  return /^(https?|ftp|file):\/\//i.test(u)
+      || /^[a-zA-Z]:[\\/]/.test(u)
+      || /^\\\\/.test(u);
+}
+
 function addLink(raw) {
-  const u = String(raw || '').trim();
-  if (!u) return false;
-  if (state.links.includes(u)) return false;
-  if (state.links.length >= 8) { toast('最多挂 8 个'); return false; }
-  state.links.push(u);
+  const text = String(raw || '').trim();
+  if (!text) return false;                       // 空字符串：什么都不做
+  if (!looksLikeLink(text)) {
+    toast('无法识别的网址或文件路径');
+    return false;
+  }
+  const l = normalizeLink(text);
+  if (!l) return false;
+  if (state.links.some((x) => x.url === l.url)) return false;
+  if (state.links.length >= 8) { toast('最多添加 8 项'); return false; }
+  state.links.push(l);
   renderLinkChips();
   return true;
 }
 
-// 系统给的可能是 file:///、也可能是裸路径，两种都留着，打开时交给系统判断
+// 拖放数据可能为 file:/// URI 或裸路径，统一转换为链接
 function linksFromDrop(dt) {
   const out = [];
   try {
@@ -790,21 +887,23 @@ function linksFromDrop(dt) {
     if (uri) {
       uri.split(/\r?\n/).forEach((line) => {
         const t = line.trim();
-        if (t && !t.startsWith('#')) out.push(t);
+        if (t && !t.startsWith('#')) out.push(fromFileUri(t));
       });
     }
   } catch (e) { /* 有的浏览器不给读 */ }
   if (!out.length) {
     try {
       const plain = dt.getData('text/plain');
-      if (plain && /^(https?:|file:|[a-zA-Z]:\\|\\\\)/.test(plain.trim())) out.push(plain.trim());
+      if (plain && /^(https?:|file:|[a-zA-Z]:\\|\\\\)/.test(plain.trim())) {
+        out.push(fromFileUri(plain.trim()));
+      }
     } catch (e) { /* 同上 */ }
   }
   return out;
 }
 
-// 依次交给系统打开，中间隔一点，别一下把桌面刷爆
-// 切换「正在进行」：按钮是开始，环是取消
+// 依次交由系统打开，间隔少量时间，避免同时弹出过多窗口
+// 切换“正在进行”：按钮用于开始计时，进度环用于停止计时
 async function toggleStart(id, on) {
   const t = state.tasks.find((x) => x.id === id);
   if (!t) return;
@@ -816,9 +915,9 @@ async function toggleStart(id, on) {
     if (!data.ok) throw new Error(data.error || '保存失败');
     t.startedAt = on ? Date.now() : 0;
     render();
-    toast(on ? '开始计时' : '已取消');
+    toast(on ? '开始计时' : '已停止计时');
   } catch (e) {
-    toast('没能保存，再试一次');
+    toast('保存失败');
   }
 }
 
@@ -826,9 +925,10 @@ async function openTaskLinks(id) {
   const t = state.tasks.find((x) => x.id === id);
   if (!t || !t.links || !t.links.length) return;
   let failed = 0;
-  for (const u of t.links) {
+  for (const l of t.links) {
     try {
-      const res = await fetch('/api/open?url=' + encodeURIComponent(u), {
+      const res = await fetch('/api/open?url=' + encodeURIComponent(l.url)
+        + '&call=' + encodeURIComponent(l.call || ''), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
@@ -840,7 +940,7 @@ async function openTaskLinks(id) {
     }
     await new Promise((r) => setTimeout(r, 120));
   }
-  if (failed) toast(failed + ' 项没能打开');
+  if (failed) toast(failed + ' 项无法打开');
 }
 
 function addTask() {
@@ -881,13 +981,13 @@ function addTask() {
   scheduleSave();
 }
 
-// 勾完成走服务端的 /api/toggle，不再本地改完整份 PUT。
-// 重复任务的下一期只在服务端派生，本地改法会把那条链静默断掉。
+// 完成任务通过服务端 /api/toggle 修改，避免本地重写完整任务文件。
+// 重复任务的下一期仅由服务端派生；本地修改会导致后续任务链中断。
 async function toggleDone(id) {
   const t = state.tasks.find((x) => x.id === id);
   if (!t) return;
 
-  if (state.saveTimer) await saveNow();     // 先把手头没落盘的改动写掉，免得被重读冲掉
+  if (state.saveTimer) await saveNow();     // 先将待保存改动写入磁盘，避免后续重读覆盖
   if (state.loadError) return;
 
   try {
@@ -895,7 +995,7 @@ async function toggleDone(id) {
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
   } catch (e) {
-    toast('没能保存：' + e.message);
+    toast('保存失败：' + e.message);
     return;
   }
 
@@ -903,7 +1003,7 @@ async function toggleDone(id) {
   render();
 }
 
-// 置顶只改一个字段，跟着整份保存走，和改名、改标签是同一条路
+// 置顶仅修改一个字段，并随任务列表一并保存，与标题和标签使用相同保存流程
 function togglePin(id) {
   const t = state.tasks.find((x) => x.id === id);
   if (!t) return;
@@ -952,28 +1052,100 @@ function clearDone() {
   });
 }
 
-/* ---------------------------------------------------------------- 编辑标题 */
+/* ---------------------------------------------------------------- 编辑任务 */
 
-function startEdit(id) {
-  state.editingId = id;
-  state.cancelEdit = false;
-  render();
+// 编辑窗口不另造控件：打开时把输入区的预估、截止、材料三块整个挪进弹窗，
+// 关闭时放回原位，并把控制台自己的草稿换回来。
+const editor = { id: null, draft: null };
+
+function openTaskEditor(id) {
+  const t = state.tasks.find((x) => x.id === id);
+  if (!t || !el.editMask) return;
+
+  editor.id = id;
+  editor.draft = {
+    dueDate: state.dueDate,
+    dueTime: state.dueTime,
+    links: state.links.slice(),
+    estimate: state.estimate,
+    estRaw,
+    estUnit,
+  };
+
+  // 任务的值灌进共用控件
+  const due = typeof t.due === 'string' ? t.due : '';
+  state.dueDate = due ? due.slice(0, 10) : '';
+  state.dueTime = due.length >= 16 ? due.slice(11, 16) : '23:59';
+  state.links = (t.links || []).map(normalizeLink).filter(Boolean);
+  state.estimate = Number(t.estimate) > 0 ? Number(t.estimate) : 0;
+  estUnit = state.estimate && state.estimate % 1440 === 0 ? 0
+          : (state.estimate && state.estimate % 60 === 0 ? 1 : 2);
+  estRaw = state.estimate ? String(trimNum(state.estimate / EST_UNITS[estUnit].min)) : '';
+  estTyped = false;                  // 编辑面板里是回填值，换单位要换算
+
+  paintEst();
+  syncDue();
+  renderLinkChips();
+
+  el.editFields.appendChild(el.estField);
+  el.editFields.appendChild(el.dueField);
+  el.editFields.appendChild(el.linkField);
+  el.editChips.appendChild(el.linkChips);
+
+  el.editTitle.value = t.title;
+  el.editMask.hidden = false;
+  el.editTitle.focus();
+  el.editTitle.select();
 }
 
-function commitEdit(input) {
-  const id = input.dataset.edit;
-  const t = state.tasks.find((x) => x.id === id);
-  state.editingId = null;
-  if (!t) { render(); return; }
+function closeTaskEditor() {
+  if (!el.editMask || el.editMask.hidden) return;
+  el.editMask.hidden = true;
+  editor.id = null;
 
-  if (state.cancelEdit) { state.cancelEdit = false; render(); return; }
+  // 控件放回输入区，顺序与原布局一致
+  el.composerMeta.insertBefore(el.estField, el.tagsField);
+  el.composerMeta.insertBefore(el.dueField, el.tagsField);
+  el.composerMeta.insertBefore(el.linkField, el.tagsField);
+  el.composer.appendChild(el.linkChips);
 
-  const val = input.value.trim();
-  if (val && val !== t.title) {
-    t.title = val.slice(0, 500);
-    scheduleSave();
+  const d = editor.draft;
+  if (d) {
+    state.dueDate = d.dueDate;
+    state.dueTime = d.dueTime;
+    state.links = d.links;
+    state.estimate = d.estimate;
+    estRaw = d.estRaw;
+    estUnit = d.estUnit;
   }
+  editor.draft = null;
+
+  paintEst();
+  syncDue();
+  renderLinkChips();
+}
+
+function saveTaskEditor() {
+  const t = state.tasks.find((x) => x.id === editor.id);
+  if (!t) { closeTaskEditor(); return; }
+
+  commitEstimate();                       // 输入框里的数字先落成 state.estimate
+  const title = el.editTitle.value.trim();
+  if (!title) {
+    toast('标题不能为空');
+    el.editTitle.focus();
+    return;
+  }
+
+  t.title = title.slice(0, 500);
+  t.due = state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null;
+  t.estimate = state.estimate || 0;
+  t.links = state.links.slice();
+
+  closeTaskEditor();
   render();
+  scheduleSave();
+  toast('已保存');
 }
 
 /* ---------------------------------------------------------------- 主题 */
@@ -1038,7 +1210,7 @@ function paintSwitch(node, on) {
   node.setAttribute('aria-checked', on ? 'true' : 'false');
 }
 
-// 服务端一次返回三项，统一刷一遍，省得各自记状态
+// 服务端一次返回三项设置，统一刷新，避免各自维护状态
 function paintAllSettings(data) {
   paintSwitch(el.swWidget, !!data.widget);
   paintSwitch(el.swTopmost, !!data.topmost);
@@ -1051,7 +1223,7 @@ async function loadWidgetSetting() {
     const res = await fetch('/api/settings');
     paintAllSettings(await res.json());
   } catch (e) {
-    /* 读不到就保持原样 */
+    /* 设置读取失败时保留现有状态 */
   }
 }
 
@@ -1073,13 +1245,13 @@ async function toggleSetting(key, node, onMsg, offMsg) {
   } catch (e) {
     node.setAttribute('aria-checked', next ? 'false' : 'true');
     if (key === 'widget') el.widgetNote.hidden = !next;
-    toast('设置没有保存成功');
+    toast('设置保存失败');
   } finally {
     node.disabled = false;
   }
 }
 
-// 进行中的环每秒推一点，不用整表重绘
+// 每秒更新进行中任务的进度环，无需重绘任务列表
 setInterval(() => {
   document.querySelectorAll('[data-bar]').forEach((node) => {
     const t = state.tasks.find((x) => x.id === node.dataset.bar);
@@ -1098,6 +1270,13 @@ setInterval(() => {
   });
 }, 1000);
 
+// 设置面板打开时与后台保持同步：托盘菜单可切换悬浮清单，无需刷新页面
+setInterval(() => {
+  if (el.sheetMask.hidden) return;
+  if ([el.swWidget, el.swTopmost, el.swAutostart].some((n) => n && n.disabled)) return;
+  loadWidgetSetting();
+}, 2000);
+
 function closeSheet() {
   el.sheetMask.hidden = true;
 }
@@ -1110,7 +1289,7 @@ async function refreshBackups() {
     const list = data.backups || [];
     el.backupCount.textContent = list.length ? `${list.length} 份` : '';
     if (!list.length) {
-      el.backupList.innerHTML = '<div class="backup-empty">还没有备份，修改任务后会自动生成</div>';
+      el.backupList.innerHTML = '<div class="backup-empty">暂无备份；任务变更后将自动创建</div>';
       return;
     }
     el.backupList.innerHTML = list.map((b) => `
@@ -1194,7 +1373,7 @@ function importJSON(file) {
     }
     const tasks = Array.isArray(parsed) ? parsed : parsed.tasks;
     if (!Array.isArray(tasks)) {
-      toast('文件里没有 tasks 数组');
+      toast('文件中没有 tasks 数组');
       return;
     }
     if (!confirm(`导入会覆盖当前 ${state.tasks.length} 项任务，确定继续吗？\n（当前数据会先自动备份）`)) return;
@@ -1211,6 +1390,25 @@ function importJSON(file) {
 /* ---------------------------------------------------------------- 事件绑定 */
 
 function bind() {
+  // 编辑任务弹窗：点小窗外面或按 Esc 都等于取消
+  if (el.editMask) {
+    el.editMask.addEventListener('click', (e) => {
+      if (e.target === el.editMask) closeTaskEditor();
+    });
+    el.btnEditClose.addEventListener('click', closeTaskEditor);
+    el.btnEditCancel.addEventListener('click', closeTaskEditor);
+    el.btnEditSave.addEventListener('click', saveTaskEditor);
+    el.editTitle.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveTaskEditor(); }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !el.editMask.hidden) {
+        e.stopPropagation();
+        closeTaskEditor();
+      }
+    }, true);
+  }
+
   // 添加
   el.btnAdd.addEventListener('click', addTask);
   el.taskInput.addEventListener('keydown', (e) => {
@@ -1218,24 +1416,49 @@ function bind() {
     if (e.key === 'Escape') { el.taskInput.value = ''; }
   });
 
-  // 预估时长下拉
-  el.estBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openDuePop(false);                 // 两个面板不叠着开
-    openEstMenu(el.estMenu.hidden);
+  // 预估时长：聚焦后输入数字，滚轮或点击换单位
+  el.estInput.addEventListener('focus', beginEstEdit);
+
+  el.estInput.addEventListener('input', () => {
+    // 只留数字和一个小数点
+    let v = el.estInput.value.replace(/[^\d.]/g, '');
+    const dot = v.indexOf('.');
+    if (dot >= 0) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, '');
+    estRaw = v.slice(0, 7);
+    estTyped = true;                 // 从现在起这个数字是用户的意思
+    el.estInput.value = estRaw;
   });
 
-  el.estMenu.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-est]');
-    if (!btn) return;
-    setEstimate(Number(btn.dataset.est) || 0);
-    openEstMenu(false);
+  el.estInput.addEventListener('blur', commitEstimate);
+
+  el.estInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitEstimate();
+      el.estInput.blur();
+    }
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      beginEstEdit();                  // 还原成当前值，不提交改了一半的数字
+      el.estInput.blur();
+    }
+  });
+
+  // 单位：滚轮、点击、上下键都能换。阻止 mousedown 默认失焦行为，以保持输入框焦点
+  el.estUnitBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  el.estUnitBtn.addEventListener('click', () => shiftEstUnit(1));
+  el.estUnitBtn.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    shiftEstUnit(e.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+  el.estUnitBtn.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp') { e.preventDefault(); shiftEstUnit(-1); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); shiftEstUnit(1); }
   });
 
   // 截止时间面板
   el.dueBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    openEstMenu(false);
     openDuePop(el.duePop.hidden);
   });
 
@@ -1284,8 +1507,12 @@ function bind() {
   });
 
   document.addEventListener('click', (e) => {
-    if (!el.estField.contains(e.target)) openEstMenu(false);
     if (!el.dueField.contains(e.target)) openDuePop(false);
+    // 选择来源的菜单：单击其他区域时收起
+    if (el.pickPop && !el.pickPop.hidden
+        && !el.pickPop.contains(e.target) && !el.btnPick.contains(e.target)) {
+      el.pickPop.hidden = true;
+    }
   });
 
   // 视图切换
@@ -1327,7 +1554,7 @@ function bind() {
     const startBtn = e.target.closest('[data-start]');
     if (startBtn) { toggleStart(startBtn.dataset.start, startBtn.dataset.on === '1'); return; }
     const edit = e.target.closest('[data-edit]');
-    if (edit) { startEdit(edit.dataset.edit); return; }
+    if (edit) { openTaskEditor(edit.dataset.edit); return; }
     const open = e.target.closest('[data-open]');
     if (open) { openTaskLinks(open.dataset.open); return; }
     const check = e.target.closest('[data-check]');
@@ -1338,15 +1565,6 @@ function bind() {
 
 
 
-  el.list.addEventListener('keydown', (e) => {
-    if (!e.target.classList.contains('task-edit')) return;
-    if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
-    if (e.key === 'Escape') { state.cancelEdit = true; e.target.blur(); }
-  });
-
-  el.list.addEventListener('focusout', (e) => {
-    if (e.target.classList.contains('task-edit')) commitEdit(e.target);
-  });
 
   // 底栏
   el.btnClearDone.addEventListener('click', clearDone);
@@ -1357,25 +1575,57 @@ function bind() {
     applyTheme(cur === 'dark' ? 'light' : 'dark');
   });
 
-  // 从这里开始：粘贴 / 手填 / 拖文件
+  // 关联材料：粘贴 / 手填 / 拖文件
   if (el.btnStart) {
-    // 平时收成一个按钮，点一下才摊开输入框
+    // 默认收起为按钮，点击后展开输入框
     el.btnStart.addEventListener('click', () => {
       const open = el.linkField.classList.toggle('is-open');
       el.btnStart.setAttribute('aria-expanded', open ? 'true' : 'false');
       if (open) el.linkInput.focus();
     });
   }
-  if (el.btnPasteLink) {
-    el.btnPasteLink.addEventListener('click', async () => {
-      try {
-        const text = await navigator.clipboard.readText();
-        const items = String(text || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        if (!items.length) { el.linkInput.focus(); return; }
-        items.slice(0, 8).forEach(addLink);
-      } catch (e) {
-        el.linkInput.focus();          // 没给剪贴板权限就退回手填
-      }
+  // “+”按钮与 Enter 执行相同操作：提交当前输入并清空输入框。
+  if (el.btnAddLink) {
+    // 未拦截 mousedown 时，点击 + 会使输入框失焦，内容为空则自动收起
+    el.btnAddLink.addEventListener('mousedown', (e) => e.preventDefault());
+    el.btnAddLink.addEventListener('click', () => {
+      if (addLink(el.linkInput.value)) el.linkInput.value = '';
+      el.linkInput.focus();
+    });
+  }
+
+  // 浏览器拿不到本地绝对路径，只能让本机进程弹原生选择框
+  async function pickFromDisk(mode) {
+    try {
+      const res = await fetch('/api/pick?mode=' + mode, { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) { toast('无法打开选择框'); return; }
+      const paths = Array.isArray(data.paths) ? data.paths : [];
+      if (!paths.length) return;                 // 取消了，什么都不做
+      let added = 0;
+      paths.forEach((p) => { if (addLink(p)) added++; });
+      if (added) toast('已添加 ' + added + ' 项');
+    } catch (e) {
+      toast('无法打开选择框');
+    }
+  }
+
+  // 选择按钮：一个按钮 + 两项菜单。Windows 的选择框不能文件和文件夹混选
+  if (el.btnPick) {
+    el.btnPick.addEventListener('mousedown', (e) => e.preventDefault());   // 别把输入框顶失焦
+    el.btnPick.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (el.pickPop) el.pickPop.hidden = !el.pickPop.hidden;
+    });
+  }
+  if (el.pickPop) {
+    // 未拦截 mousedown 时，单击菜单项会使输入框失焦，菜单随之收起，点击落不到项上
+    el.pickPop.addEventListener('mousedown', (e) => e.preventDefault());
+    el.pickPop.addEventListener('click', (e) => {
+      const item = e.target.closest('.pick-item');
+      if (!item) return;
+      el.pickPop.hidden = true;
+      pickFromDisk(item.dataset.mode);
     });
   }
   {
@@ -1385,12 +1635,12 @@ function bind() {
         const b = e.target.closest('[data-rep]');
         if (!b) return;
         const key = b.dataset.rep || '';
-        // 没有截止时间的重复任务永远不会触发派生，选重复时顺手把截止定在今天
+        // 无截止时间的重复任务不会触发派生，选择重复时同时将截止时间设为今天
         if (key && !state.dueDate) {
           state.dueDate = todayStr();
           state.dueTime = '23:59';
           syncDue();
-          toast('重复任务需要一个截止时间，已设为今天 23:59');
+          toast('重复任务需设置截止时间，已设为今天 23:59');
         }
         state.repeat = key;
         paintRepeatChips();
@@ -1399,10 +1649,11 @@ function bind() {
   }
   if (el.linkInput) {
     el.linkInput.addEventListener('blur', () => {
-      // 没填东西就收回去，别占着地方
+      // 内容为空时收起，避免占用空间
       if (!el.linkInput.value.trim() && el.linkField) {
         el.linkField.classList.remove('is-open');
         el.btnStart.setAttribute('aria-expanded', 'false');
+        if (el.pickPop) el.pickPop.hidden = true;
       }
     });
   }
@@ -1476,7 +1727,6 @@ function bind() {
     }
     if (e.key === 'Escape') {
       if (!el.duePop.hidden) { openDuePop(false); return; }
-      if (!el.estMenu.hidden) { openEstMenu(false); return; }
       if (!el.sheetMask.hidden) { closeSheet(); return; }
       if (state.query) {
         el.searchInput.value = '';
@@ -1491,8 +1741,8 @@ function bind() {
     }
   });
 
-  // 关页面前把未落盘的改动用 sendBeacon 送走。
-  // 送出去了就不拦：拦一次会弹「离开此网站？」，而改动其实已经写进本地服务了。
+  // 页面关闭前通过 sendBeacon 提交尚未持久化的更改。
+  // 已持久化的更改无需拦截页面关闭，避免浏览器显示离开确认提示。
   window.addEventListener('beforeunload', () => {
     if (!state.saveTimer && !saveGate.again) return;
     clearTimeout(state.saveTimer);
@@ -1501,7 +1751,7 @@ function bind() {
       const blob = new Blob([JSON.stringify(currentPayload())], { type: 'application/json' });
       navigator.sendBeacon('/api/tasks', blob);
     } catch (err) {
-      /* 送不出去也没别的办法，下次打开会重新读盘 */
+      /* sendBeacon 失败后无法在页面关闭时重试；下次加载将从本地数据文件重新读取 */
     }
   });
 }
@@ -1518,6 +1768,7 @@ async function init() {
   bind();
   setEstimate(0);
   syncDue();
+  paintRepeatChips();      // HTML 里写死的 is-on 也要补上 aria-pressed
   await loadTasks();
   render();
   el.taskInput.focus();

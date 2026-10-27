@@ -32,7 +32,6 @@ static BYTE*   g_bits    = nullptr;
 static HDC     g_memDC   = nullptr;
 static HBITMAP g_bmp     = nullptr;
 static HDC     g_screenDC = nullptr;
-static ULONG_PTR g_gdiToken = 0;
 static HWND    g_hwnd = nullptr;
 static HWND    g_desktopParent = nullptr;   // 挂到桌面后指向 Progman
 
@@ -45,7 +44,6 @@ static HBITMAP g_bgBmp = nullptr, g_rawBmp = nullptr, g_smallBmp = nullptr;
 static POINT g_dragOrigin{};
 static POINT g_winOrigin{};
 
-static wstring g_root;
 
 // 系统 DPI 缩放：界面按 96 DPI 设计，绘制时统一缩放。
 static float g_scale = 1.0f;      // DPI 缩放，卡片按它走

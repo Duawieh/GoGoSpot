@@ -13,7 +13,7 @@
 // ---- 版本 ----
 
 // 版本号只在这里改一处：/api/health、/api/info 和命令行横幅都读它
-static const char* const GOGOSPOT_VERSION = "1.0.6";
+static const char* const GOGOSPOT_VERSION = "1.0.7";
 
 // ---- 日期 ----
 
@@ -38,6 +38,9 @@ static const int PORT_SCAN_END   = PORT_SCAN_START + PORT_SCAN_COUNT - 1;   // 8
 // 返回监听端口；<0 表示不该继续（已有实例或启动失败）。
 int  serverStart(int argc, char** argv);
 void serverStop();
+
+// 数据目录（默认 exe\data，--data 会改掉它）。悬浮清单读 .port 用。
+const wchar_t* serverDataDir();
 
 // 悬浮清单开关，存在 data\settings.json
 bool appWidgetEnabled();

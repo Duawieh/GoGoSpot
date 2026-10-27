@@ -1,6 +1,8 @@
 // ---- 窗口位置持久化 ----
 
-static wstring iniPath() { return g_root + L"\\data\\widget.ini"; }
+// 窗口位置存在数据目录里，和 settings.json 同一个地方；
+// --data 换过目录时各存各的，便携副本不会跟着正式版跑
+static wstring iniPath() { return wstring(serverDataDir()) + L"\\widget.ini"; }
 
 // 读窗口位置；没存过或者文件坏了返回 false
 static bool loadSettings(POINT& pt) {

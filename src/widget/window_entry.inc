@@ -68,8 +68,6 @@ HWND widgetCreate(bool enabled) {
         g_winH = (int)(WIN_H * g_scale + 0.5f);
     }
 
-    g_root = exeDir();
-
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;

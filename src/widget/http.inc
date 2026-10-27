@@ -60,9 +60,11 @@ static wstring urlEncode(const string& s) {
     return u8tow(out);
 }
 
-// 先读 data/.port，读不到再逐个端口试探。
+// 先读 <数据目录>/.port，读不到再逐个端口试探。
+// 路径跟着 --data 走：写死 exe\data 的话，便携副本读不到自己的端口，
+// 退化成扫端口，连上第一个活着的实例——那多半是正式版
 static int readPortFile() {
-    wstring path = g_root + L"\\data\\.port";
+    wstring path = wstring(serverDataDir()) + L"\\.port";
     FILE* f = _wfopen(path.c_str(), L"rb");
     if (!f) return 0;
     char buf[32] = {0};

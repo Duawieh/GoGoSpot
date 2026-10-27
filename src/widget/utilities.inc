@@ -17,13 +17,3 @@ static string wtou8(const wstring& w) {
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
     return s;
 }
-
-static wstring exeDir() {
-    wchar_t buf[4096];
-    DWORD n = GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
-    if (n == 0) return L".";
-    wstring p(buf, n);
-    size_t pos = p.find_last_of(L"\\/");
-    return (pos == wstring::npos) ? wstring(L".") : p.substr(0, pos);
-}
-

@@ -15,7 +15,7 @@
   --accent:        #6c8cff;
   --accent-2:      #a97bff;
   --accent-soft:   rgba(108, 140, 255, 0.13);
-  --tile-a:        #4e6bff;   /* 品牌方块的渐变，比 --accent 深一档，反白才压得住 */
+  --tile-a:        #4e6bff;   /* 品牌方块渐变色比 --accent 深一档，用于保证反白标识的对比度 */
   --tile-b:        #a06bff;
   --high:          #ff5f7e;
   --mid:           #ffb44d;
@@ -189,7 +189,7 @@ body {
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  padding-right: 0.03em;   /* 斜体感的末端别被裁掉 */
+  padding-right: 0.03em;   /* 避免斜体文字末端被裁切 */
 }
 
 .brand-text p {
@@ -305,7 +305,7 @@ html[data-theme="light"] .ico-moon { display: none; }
 /* ---- 输入区 ---- */
 
 .composer {
-  /* backdrop-filter 会新建层叠上下文，不抬高会被后面的任务列表盖住 */
+  /* backdrop-filter 会新建层叠上下文；需提升层级以避免被任务列表覆盖 */
   position: relative;
   z-index: 20;
   border-radius: var(--radius);
@@ -381,28 +381,31 @@ html[data-theme="light"] .ico-moon { display: none; }
   border-top: 1px dashed var(--border);
 }
 
-/* 预估时长：自绘下拉。原生 select 在深色下是系统外观，跟周围控件对不上。 */
-.meta-est {
-  position: relative;
-  cursor: pointer;
-  padding-right: 8px;
+/* 预估时长：一个数字 + 一个单位，单位编辑时才出现 */
+.meta-est .est-input {
+  width: 96px;
 }
 
-.est-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
+.est-unit-btn {
+  flex: none;
   border: 0;
-  background: transparent;
-  color: var(--text);
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
   font: inherit;
-  font-size: 12.5px;
-  padding: 1px 0;
-  cursor: pointer;
-  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: ns-resize;
+  transition: background .12s, color .12s;
 }
 
-.est-btn.is-empty { color: var(--text-3); }
+.est-unit-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.est-unit-btn[hidden] { display: none; }
 
 .est-caret {
   color: var(--text-3);
@@ -410,70 +413,9 @@ html[data-theme="light"] .ico-moon { display: none; }
   transition: transform .18s ease;
 }
 
-.meta-est.is-open .est-caret { transform: rotate(180deg); }
-
-.est-menu {
-  position: absolute;
-  top: calc(100% + 7px);
-  left: -4px;
-  z-index: 40;
-  min-width: 126px;
-  padding: 5px;
-  border-radius: 13px;
-  border: 1px solid var(--border-2);
-  background: var(--menu-bg);
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  animation: estMenuIn .15s cubic-bezier(.22, 1, .36, 1) both;
-}
-
-.est-menu[hidden] { display: none; }
-
 @keyframes estMenuIn {
   from { opacity: 0; transform: translateY(-5px) scale(.97); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-.est-menu button {
-  border: 0;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  padding: 6px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background .12s, color .12s;
-}
-
-.est-menu button:hover {
-  background: var(--panel-2);
-  color: var(--text);
-}
-
-.est-menu button.is-on {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.est-menu .est-none {
-  color: var(--text-3);
-  margin-top: 5px;
-  position: relative;
-}
-
-.est-menu .est-none::before {
-  content: "";
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  top: -3px;
-  height: 1px;
-  background: var(--border);
 }
 
 .meta-field {
@@ -505,24 +447,79 @@ html[data-theme="light"] .ico-moon { display: none; }
 
 .meta-tags input { width: 96px; }
 
-/* 从这里开始：平时收成一个按钮，点开才出输入框 */
-.meta-link { cursor: default; }
+/* 关联材料输入区默认折叠为按钮，展开后显示输入框 */
+.meta-link { cursor: default; position: relative; }
 .meta-link input,
-.meta-link .link-paste { display: none; }
-.meta-link.is-open input { display: inline-block; width: 150px; }
-.meta-link.is-open .link-paste { display: inline-block; }
+.meta-link .link-add,
+.meta-link .link-pick { display: none; }
+.meta-link.is-open input { display: inline-block; width: 132px; }
+.meta-link.is-open .link-add,
+.meta-link.is-open .link-pick { display: inline-flex; align-items: center; justify-content: center; }
 .meta-link input::placeholder { color: var(--text-3); }
 
-.link-paste {
+.link-pick {
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-3);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.link-pick:hover { background: var(--accent-soft); color: var(--accent); }
+.link-pick:active { transform: scale(.94); }
+
+/* 选择来源的两项菜单：Windows 的对话框不支持文件和文件夹混选 */
+.pick-pop {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: -4px;
+  z-index: 40;
+  width: 128px;
+  padding: 5px;
+  border-radius: 12px;
+  border: 1px solid var(--border-2);
+  background: var(--menu-bg);
+  box-shadow: var(--shadow);
+  cursor: default;
+  animation: estMenuIn .15s cubic-bezier(.22, 1, .36, 1) both;
+}
+.pick-pop[hidden] { display: none; }
+
+.pick-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
   font: inherit;
-  font-size: 12px;
-  padding: 0 2px;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 6px 9px;
   cursor: pointer;
 }
-.link-paste:hover { color: var(--accent); }
+.pick-item:hover { background: var(--accent-soft); color: var(--accent); }
+
+.link-add {
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  cursor: pointer;
+  transition: background .12s, color .12s, transform .1s;
+}
+.link-add:hover { background: var(--accent); color: #fff; }
+.link-add:active { transform: scale(.94); }
 
 .link-btn {
   border: 0;
@@ -574,7 +571,7 @@ html[data-theme="light"] .ico-moon { display: none; }
 }
 .link-chip button:hover { color: var(--danger, #ff5c70); }
 
-/* 任务行：标题 + 「从这里开始」图标 */
+/* 任务行：标题 + “从这里开始”图标 */
 .task-head {
   display: flex;
   align-items: flex-start;
@@ -782,6 +779,56 @@ html[data-theme="light"] .ico-moon { display: none; }
 .due-clear { margin-left: auto; color: var(--text-3); }
 .due-clear:hover { background: transparent; color: var(--high); }
 
+/* 重复规则：五档一行放不下（“每两星期”要 46px，五档加间距要 230px），
+   拆成两行：前三档各占两列，后两档各占三列，正好铺满。 */
+.due-repeat { margin-top: 10px; }
+
+.due-repeat .due-clock-cap {
+  display: block;
+  margin: 0 0 5px 2px;
+}
+
+.repeat-chips {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.repeat-chips button {
+  grid-column: span 2;
+  height: 25px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  /* 使用 inset 描边避免改变盒模型，并兼容按压缩放变换 */
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background .14s, color .14s, box-shadow .14s, transform .09s;
+}
+
+.repeat-chips button:nth-child(4),
+.repeat-chips button:nth-child(5) { grid-column: span 3; }
+
+.repeat-chips button:hover {
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-2);
+}
+
+/* 按压时立即缩放，提供即时视觉反馈 */
+.repeat-chips button:active { transform: scale(.96); }
+
+.repeat-chips button.is-on,
+.repeat-chips button.is-on:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 /* ---- 筛选 ---- */
 
 .toolbar {
@@ -940,7 +987,7 @@ html[data-theme="light"] .seg-btn.is-on { background: #fff; }
 
 .task:hover { background: var(--panel-2); }
 
-/* 临近截止的任务：整行给一层暖色底 + 左侧竖条 */
+/* 临近截止任务使用暖色行背景和左侧竖条 */
 .task.urgent {
   background: linear-gradient(90deg, rgba(255, 95, 126, 0.10), rgba(255, 95, 126, 0.03));
   box-shadow: inset 2.5px 0 0 var(--high);
@@ -955,7 +1002,7 @@ html[data-theme="light"] .seg-btn.is-on { background: #fff; }
   box-shadow: none;
 }
 
-/* 一天之内的任务：形状跟红色那条一样，颜色降一档 */
+/* 24 小时内的任务使用与红色状态相同的形状，并降低颜色等级 */
 .task.urgent-y {
   background: linear-gradient(90deg, rgba(255, 180, 77, 0.10), rgba(255, 180, 77, 0.03));
   box-shadow: inset 2.5px 0 0 var(--mid);
@@ -1029,7 +1076,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   word-break: break-word;
   transition: color .2s;
   line-height: 1.45;
-  /* 一行 500 字会把行撑到四行，把整个列表顶下去；最多两行，多出来的省略 */
+  /* 标题最多显示两行，超出部分省略，以限制行高和列表占用空间 */
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -1089,7 +1136,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   background: var(--accent-soft);
 }
 
-/* 快到期了：加粗、换成警示色 */
+/* 临近截止的任务使用加粗字重和警示色 */
 .m-due.soon {
   color: var(--mid);
   background: rgba(255, 180, 77, 0.14);
@@ -1100,7 +1147,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   font-weight: 600;
 }
 
-/* 已完成的任务不该再用红色催人 */
+/* 已完成任务不显示逾期红色样式 */
 .task.done .m-due,
 .task.done .m-due.overdue,
 .task.done .m-due.today {
@@ -1133,7 +1180,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 }
 
 /* 正在进行：行顶一条直进度条 */
-/* 进度色铺在整行最底层，文字和按钮都压在它上面 */
+/* 进度色位于行背景底层，文字与按钮绘制在上层 */
 .task-progress {
   position: absolute;
   inset: 0;
@@ -1159,7 +1206,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 .task-progress.is-red i {
   background: linear-gradient(90deg, rgba(255, 92, 112, 0.52), rgba(255, 92, 112, 0.08));
 }
-/* 不紧急那档：没填预估的任务染色也用这个紫，跟悬浮清单对齐 */
+/* 低紧急程度任务使用紫色进度样式，与悬浮清单保持一致 */
 .task-progress.is-purple i {
   background: linear-gradient(90deg, rgba(178, 132, 255, 0.55), rgba(178, 132, 255, 0.10));
 }
@@ -1169,7 +1216,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   z-index: 1;
 }
 
-/* 进行中的行：暖色底让给进度，但左边那道暖色竖条留着 */
+/* 进行中任务以进度色作为行底色，并保留左侧暖色竖条 */
 .task.is-running.urgent,
 .task.is-running.urgent:hover,
 .task.is-running.urgent-y,
@@ -1193,7 +1240,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 .task:hover .task-go,
 .task-go.is-stop { opacity: 1; }
 
-/* 进行中：画成一颗有底色有描边的圆按钮，一眼看得出是「停止」 */
+/* 进行中：画成一颗有底色有描边的圆按钮，以底色和描边区分停止状态 */
 .task-go.is-stop {
   border: 1px solid currentColor;
   background: rgba(255, 255, 255, 0.07);
@@ -1227,7 +1274,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 
 .task:hover .task-pin { opacity: 1; }
 
-/* 置顶的那条：按钮常显并加重笔画，一眼看得出它凭什么排在最前面 */
+/* 置顶的那条：按钮常显并加重笔画，体现置顶任务的排序优先级 */
 .task-pin.is-on {
   opacity: 1;
   color: var(--accent);
@@ -1281,7 +1328,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   color: var(--text-3);
 }
 
-/* display:flex 会盖掉 hidden 属性，必须显式还原 */
+/* display:flex 会覆盖 hidden 属性，需显式还原其显示状态 */
 .empty[hidden] { display: none; }
 
 .empty-art { opacity: 0.9; margin-bottom: 14px; }
@@ -1723,7 +1770,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   .btn-add { padding: 9px 14px; }
 }
 
-/* 320px 这种极窄宽度下底栏会被挤成竖排，「已同步」三个字各占一行 */
+/* 视口宽度小于 380px 时，底栏改为垂直排列，避免状态文本被拆分 */
 @media (max-width: 380px) {
   .footer {
     flex-direction: column;
@@ -1736,7 +1783,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 
 /* ---- 可访问性 ---- */
 
-/* 键盘走到哪儿都要看得见，别只给开关做 */
+/* 为所有键盘焦点提供可见指示 */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -1744,7 +1791,7 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
 
 .task:focus-visible { outline-offset: 0; }
 
-/* 系统里开了「减少动态效果」就只留必要的淡入淡出 */
+/* 启用系统“减少动态效果”设置时，仅保留必要的淡入淡出动画 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1755,3 +1802,111 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- 编辑任务弹窗 ---- */
+
+/* 遮罩负责模糊背景，同时吃掉小窗之外的一切点击 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(5, 7, 11, 0.5);
+  backdrop-filter: blur(10px) saturate(0.92);
+  -webkit-backdrop-filter: blur(10px) saturate(0.92);
+  animation: maskIn .16s ease both;
+}
+.modal-mask[hidden] { display: none; }
+
+@keyframes maskIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 不设 overflow：截止日历是绝对定位的弹层，裁掉就看不见了 */
+.modal-card {
+  width: min(560px, 100%);
+  padding: 18px 20px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-2);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow);
+  cursor: default;
+  animation: cardIn .2s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.modal-head h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text); }
+
+.modal-row { display: block; margin-bottom: 16px; }
+.modal-row:last-of-type { margin-bottom: 0; }
+
+.modal-cap {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.modal-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 11px 13px;
+  outline: none;
+  transition: border-color .15s, background .15s;
+}
+.modal-input:focus { border-color: var(--accent); background: var(--accent-soft); }
+.modal-input::placeholder { color: var(--text-3); }
+
+/* 复用输入区那三个控件，横向排开，放不下就换行 */
+.modal-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.modal-chips { margin-top: 9px; }
+.modal-chips:empty { display: none; }
+
+/* 弹窗里不提供重复设置，避免改到控制台自己的草稿 */
+.modal-fields .due-repeat { display: none; }
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.modal-foot .btn-ghost { padding: 9px 20px; font-size: 13.5px; border-radius: 11px; }
+
+.btn-save {
+  border: 0;
+  border-radius: 11px;
+  padding: 9px 22px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  transition: box-shadow .15s, transform .1s;
+}
+.btn-save:hover { box-shadow: 0 8px 22px rgba(108, 140, 255, 0.38); }
+.btn-save:active { transform: scale(0.96); }

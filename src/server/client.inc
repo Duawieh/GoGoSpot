@@ -61,6 +61,16 @@ static void handleClient(SOCKET c) {
     auto itTe = headers.find("transfer-encoding");
     if (itTe != headers.end() && itTe->second.find("chunked") != string::npos) {
         sendResponse(c, jsonError(411, "不支持 chunked，请带 Content-Length"));
+        // 和 413 一样：发完不能直接关，客户端还在往外发 chunk，
+        // 关掉会回 RST，客户端拿到的是连接重置而不是这句说明
+        shutdown(c, SD_SEND);
+        DWORD drain = 800;
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&drain, sizeof(drain));
+        DWORD t0 = GetTickCount();
+        while (GetTickCount() - t0 < 3000) {
+            int n = recv(c, buf, (int)sizeof(buf), 0);
+            if (n <= 0) break;
+        }
         closesocket(c);
         return;
     }
