@@ -20,6 +20,7 @@ static const int PANEL_H = 138;
 static const int CHIP_H  = 24;
 
 static const UINT_PTR TIMER_REFRESH  = 1;
+
 static const UINT_PTR TIMER_SETTLE   = 2;
 static const UINT_PTR TIMER_FADE     = 3;
 static const UINT_PTR TIMER_COLLAPSE = 4;
@@ -35,6 +36,8 @@ static const UINT_PTR TIMER_TICK     = 11;   // 任务计时期间每秒重绘�
 static const UINT WM_APP_WIDGET_ENABLED = WM_APP + 1;
 static const UINT WM_APP_TOPMOST        = WM_APP + 2;
 static const UINT WM_APP_TRAY_OPEN      = WM_APP + 3;
+static const UINT WM_APP_REFRESH        = WM_APP + 4;   // 交互结束后补一次刷新
+static const UINT WM_APP_THEME          = WM_APP + 5;   // 控制台切了日间/夜间主题
 
 // 部分 Windows SDK 未定义该常量，缺失时在此补充
 #ifndef WM_DPICHANGED
@@ -56,5 +59,4 @@ static const REAL RING_R_IDLE = 16.0f;   // 常态
 
 // 紧急分级：剩余 <= min(预估, 12h) 红色，24h 内黄色。
 static const long long URG_RED_CAP_MS = 12LL * 3600000LL;
-static const long long URG_YELLOW_MS  = 24LL * 3600000LL;
 

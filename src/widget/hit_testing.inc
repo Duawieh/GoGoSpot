@@ -100,6 +100,8 @@ static int hitCalendar(int cx, int cy) {
     r = calHourInc(); if (inRect(cx, cy, r.X, r.Y, r.Width, r.Height)) return 6;
     r = calMinDec();  if (inRect(cx, cy, r.X, r.Y, r.Width, r.Height)) return 7;
     r = calMinInc();  if (inRect(cx, cy, r.X, r.Y, r.Width, r.Height)) return 8;
+    r = calHourBox(); if (inRect(cx, cy, r.X, r.Y, r.Width, r.Height)) return 9;
+    r = calMinBox();  if (inRect(cx, cy, r.X, r.Y, r.Width, r.Height)) return 10;
 
     int first = firstWeekday(g_pickYear, g_pickMonth);
     int dim = daysOfMonth(g_pickYear, g_pickMonth);
@@ -131,10 +133,13 @@ static void openCalendar() {
             g_pickHour = hh; g_pickMin = mm;
         }
     }
+    g_timeEditCol = -1;
+    g_timeEditText.clear();
     g_pickingDate = true;
 }
 
 static void applyCalendar() {
+    commitTimeEdit();                        // 只敲了一位的时/分也要收下
     int day = g_pickDay;
     int dim = daysOfMonth(g_pickYear, g_pickMonth);
     if (day > dim) day = dim;                 // 换月之后天数可能不够
@@ -144,6 +149,8 @@ static void applyCalendar() {
              g_pickYear, g_pickMonth, day, g_pickHour, g_pickMin);
     g_customDue = buf;
     g_editDue = 3;
+    g_timeEditCol = -1;
+    g_timeEditText.clear();
     g_pickingDate = false;
 }
 
@@ -173,9 +180,10 @@ static void openEstPicker() {
 
 static void applyEstPicker() {
     int total = g_estDay * 1440 + g_estHour * 60 + g_estMinute;
+    if (total <= 0) total = 60;               // 不再允许空预估，最少 1 小时
     if (total > 99999) total = 99999;         // 和服务端的上限对齐
     g_editEstCustom = total;
-    g_editEst = total > 0 ? EST_CUSTOM : -1;
+    g_editEst = EST_CUSTOM;
     g_pickingEst = false;
 }
 

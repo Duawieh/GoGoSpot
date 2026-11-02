@@ -1,5 +1,6 @@
 // ---- 数据 ----
 
+static void rebuildWorkload();   // 定义在「绘制辅助」那段
 static void splitTabs(const string& line, std::vector<string>& out) {
     out.clear();
     size_t start = 0;
@@ -80,6 +81,7 @@ static bool fetchTasks() {
     });
 
     g_tasks = std::move(list);
+    rebuildWorkload();          // 任务变了，负载表跟着重算
     g_pending = pending;
     g_total = total;
     g_loaded = true;

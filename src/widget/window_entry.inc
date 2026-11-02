@@ -11,6 +11,10 @@ void widgetTrayOpen() {
     if (g_hwnd) PostMessageW(g_hwnd, WM_APP_TRAY_OPEN, 0, 0);
 }
 
+void widgetNotifyTheme(int mode) {
+    if (g_hwnd) PostMessageW(g_hwnd, WM_APP_THEME, (WPARAM)mode, 0);
+}
+
 void widgetNotifyTopmost(bool on) {
     if (g_hwnd) PostMessageW(g_hwnd, WM_APP_TOPMOST, on ? 1 : 0, 0);
 }
@@ -105,6 +109,8 @@ HWND widgetCreate(bool enabled) {
     createSurface();
 
     g_topmost = appTopmostEnabled();
+    g_themeMode = appThemeMode();    // 主题来自设置，控制台那个三档开关改的就是它
+    setDayMode(themeModeIsLight(g_themeMode));
 
     // 桌面窗口作 owner：owned 窗口紧贴 owner 的 Z 序，Win+D 时跟着浮上来，
     // 但不是 topmost，普通窗口照样能盖住。置顶模式下不能挂 owner，否则设不上 topmost。
@@ -112,6 +118,9 @@ HWND widgetCreate(bool enabled) {
         HWND progman = FindWindowW(L"Progman", nullptr);
         if (progman) SetWindowLongPtrW(g_hwnd, GWLP_HWNDPARENT, (LONG_PTR)progman);
     }
+
+    // 不预置全屏基线：第一轮守护会把「启动时已经在全屏」当作刚切进全屏并隐藏。
+    // 最大化窗口在 fullscreenAppInFront 里已被排除，不会因此误藏。
 
     g_widgetOn = enabled;
     if (enabled) {
@@ -125,6 +134,9 @@ HWND widgetCreate(bool enabled) {
             syncPillWidth();
             present();
         }
+        // 创建阶段直接调 applyTopmost 加不上 WS_EX_TOPMOST（实测：同样的调用走消息就生效），
+        // 所以投一条消息，等消息循环起来再补一次
+        if (g_topmost) PostMessageW(g_hwnd, WM_APP_TOPMOST, 1, 0);
     } else {
         ShowWindow(g_hwnd, SW_HIDE);
     }

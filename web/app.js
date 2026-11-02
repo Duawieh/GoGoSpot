@@ -40,7 +40,7 @@ const el = {
   btnClearDone: $('btnClearDone'),
   saveState:    $('saveState'),
   saveText:     $('saveText'),
-  btnTheme:     $('btnTheme'),
+  themeSw:      $('themeSw'),
   btnData:      $('btnData'),
   swWidget:     $('swWidget'),
   widgetNote:   $('widgetNote'),
@@ -76,9 +76,12 @@ const el = {
 };
 
 const state = {
+  themeMode: 'system',      // light / system / dark
+  systemLight: null,        // 后台读到的 AppsUseLightTheme，跟随系统时以它为准
   tasks: [],
   view: 'all',
-  estimate: 0,
+  estimate: 60,             // 新建任务默认 1 小时，不再允许空预估
+  workload: null,           // 截止时刻 → 黄色线（毫秒），render 时重算
   dueDate: '',
   dueTime: '23:59',
   query: '',
@@ -127,17 +130,50 @@ function parseDue(due) {
   return isNaN(dt.getTime()) ? null : dt;
 }
 
-// 紧急分级，和悬浮清单用同一套线：
-// 剩余时间不超过 min(预估时长, 12 小时) 显示红色，一天以内显示黄色，更远不标记。
+// 紧急分级，和悬浮清单 drawing_helpers.inc 同一套负载模型：
+// 按截止时刻聚合预估，前缀和 × 系数得到黄线；黄线最低 12h。
+// 红色仍只看单条任务：min(预估, 12h)，没填预估按 1 小时。
+function buildWorkload() {
+  const byDue = new Map();
+  for (const t of state.tasks) {
+    if (!t || t.done || !t.due) continue;
+    const dt = parseDue(t.due);
+    if (!dt) continue;
+    let est = (Number(t.estimate) || 0) * 60000;
+    if (est <= 0) est = 3600000;                 // 没填预估按 1 小时
+    if (est >= 24 * 3600000) est /= 2;           // 长任务认为已含休息
+    const key = dt.getTime();
+    byDue.set(key, (byDue.get(key) || 0) + est);
+  }
+
+  const buckets = new Map();
+  let cum = 0;
+  for (const key of [...byDue.keys()].sort((a, b) => a - b)) {
+    cum += byDue.get(key);
+    const line = Math.max(cum * (cum >= 12 * 3600000 ? 2 : 1), 12 * 3600000);
+    buckets.set(key, line);
+  }
+  state.workload = buckets;
+}
+
+function ensureWorkload() {
+  if (!state.workload) buildWorkload();
+}
+
 function urgencyOf(t) {
   if (!t.due || t.done) return 0;
   const dt = parseDue(t.due);
   if (!dt) return 0;
   const remain = dt.getTime() - Date.now();
   if (remain <= 0) return 2;
-  const redLine = Math.min((t.estimate || 0) * 60000, 12 * 3600000);
+
+  const estMin = (Number(t.estimate) || 0) > 0 ? Number(t.estimate) : 60;
+  const redLine = Math.min(estMin * 60000, 12 * 3600000);
   if (remain <= redLine) return 2;
-  if (remain <= 24 * 3600000) return 1;
+
+  ensureWorkload();
+  const line = state.workload.get(dt.getTime()) || 0;
+  if (remain <= line) return 1;
   return 0;
 }
 
@@ -226,6 +262,8 @@ function normalize(t) {
     pinned: !!src.pinned,
     // 无截止时间的重复任务无法生成下一期；导入数据也按同一规则清除重复设置
     repeat: due && REPEATS.some((r) => r.key === src.repeat) ? src.repeat : '',
+    // 循环锚点必须原样带回去：控制台不认这个字段的话，任何一次保存都会让服务端重锚
+    route_origin_date: typeof src.route_origin_date === 'string' ? src.route_origin_date : '',
     createdAt: src.createdAt || new Date().toISOString(),
     completedAt: src.completedAt || null,
   };
@@ -435,7 +473,7 @@ function progressBar(t) {
     </div>`;
   }
   const r = progressRatio(t);
-  const cls = r <= 0.6 ? 'is-green' : (r <= 0.8 ? 'is-yellow' : 'is-red');
+  const cls = r <= 0.35 ? 'is-green' : (r <= 0.7 ? 'is-yellow' : 'is-red');
   const pct = Math.round(r * 1000) / 10;
   return `<div class="task-progress ${cls}" data-bar="${id}">
       <i style="width:${pct}%"></i>
@@ -544,6 +582,7 @@ function playRowMove(before) {
 }
 
 function render() {
+  buildWorkload();          // 任务列表变了，黄线跟着重算
   const all = state.tasks;
   const total = all.length;
   const done = all.filter((t) => t.done).length;
@@ -842,9 +881,13 @@ function paintRepeatChips() {
 
 function renderLinkChips() {
   if (el.btnStart) {
-    el.btnStart.textContent = state.links.length
+    // 按钮里还有个链接图标，只能改文字那一层，直接赋 textContent 会把图标冲掉
+    const label = el.btnStart.querySelector('.link-text');
+    const text = state.links.length
       ? '从这里开始 · ' + state.links.length
       : '从这里开始';
+    if (label) label.textContent = text;
+    else el.btnStart.textContent = text;
   }
   const box = el.linkChips;
   if (!box) return;
@@ -952,7 +995,7 @@ function addTask() {
   const t = normalize({
     id: uid(),
     title,
-    estimate: state.estimate,
+    estimate: state.estimate || 60,          // 不再允许空预估
     due: state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null,
     tags: parseTags(el.tagInput.value),
     links: state.links.slice(),
@@ -962,7 +1005,7 @@ function addTask() {
   state.tasks.unshift(t);
 
   el.taskInput.value = '';
-  setEstimate(0);
+  setEstimate(60);
   state.dueDate = '';
   state.dueTime = '23:59';
   syncDue();
@@ -1070,14 +1113,18 @@ function openTaskEditor(id) {
     estimate: state.estimate,
     estRaw,
     estUnit,
+    // 输入区里可能已经敲了一半的链接文字，弹窗借用了同一个输入框，得先存下来
+    linkText: el.linkInput ? el.linkInput.value : '',
+    linkOpen: el.linkField ? el.linkField.classList.contains('is-open') : false,
   };
+  if (el.linkInput) el.linkInput.value = '';
 
   // 任务的值灌进共用控件
   const due = typeof t.due === 'string' ? t.due : '';
   state.dueDate = due ? due.slice(0, 10) : '';
   state.dueTime = due.length >= 16 ? due.slice(11, 16) : '23:59';
   state.links = (t.links || []).map(normalizeLink).filter(Boolean);
-  state.estimate = Number(t.estimate) > 0 ? Number(t.estimate) : 0;
+  state.estimate = Number(t.estimate) > 0 ? Number(t.estimate) : 60;
   estUnit = state.estimate && state.estimate % 1440 === 0 ? 0
           : (state.estimate && state.estimate % 60 === 0 ? 1 : 2);
   estRaw = state.estimate ? String(trimNum(state.estimate / EST_UNITS[estUnit].min)) : '';
@@ -1114,9 +1161,15 @@ function closeTaskEditor() {
     state.dueDate = d.dueDate;
     state.dueTime = d.dueTime;
     state.links = d.links;
-    state.estimate = d.estimate;
+    state.estimate = d.estimate || 60;
     estRaw = d.estRaw;
     estUnit = d.estUnit;
+    // 输入框是弹窗和输入区共用的，不清空的话弹窗里敲的网址会留在「添加任务」那一栏
+    if (el.linkInput) el.linkInput.value = d.linkText || '';
+    if (el.linkField) {
+      el.linkField.classList.toggle('is-open', !!d.linkOpen);
+      if (el.btnStart) el.btnStart.setAttribute('aria-expanded', d.linkOpen ? 'true' : 'false');
+    }
   }
   editor.draft = null;
 
@@ -1137,9 +1190,21 @@ function saveTaskEditor() {
     return;
   }
 
+  // 弹窗里敲了链接但没按 Enter 就点保存：也收进任务，否则它只留在输入框里。
+  // 链接不合法时任务照常保存，但把文字留在输入区，不能静默清掉。
+  const pendingLink = el.linkInput ? el.linkInput.value.trim() : '';
+  if (pendingLink) {
+    if (addLink(pendingLink)) {
+      el.linkInput.value = '';
+    } else if (editor.draft) {
+      editor.draft.linkText = pendingLink;
+      editor.draft.linkOpen = true;
+    }
+  }
+
   t.title = title.slice(0, 500);
   t.due = state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null;
-  t.estimate = state.estimate || 0;
+  t.estimate = state.estimate || 60;
   t.links = state.links.slice();
 
   closeTaskEditor();
@@ -1150,17 +1215,63 @@ function saveTaskEditor() {
 
 /* ---------------------------------------------------------------- 主题 */
 
-function applyTheme(name) {
-  document.documentElement.setAttribute('data-theme', name);
-  try { localStorage.setItem('gogospot-theme', name); } catch (e) {}
+// ---- 主题：三档 ----
+// 后端 themeMode：0 日间、1 夜间、2 跟随系统
+const THEME_BY_NUM = ['light', 'dark', 'system'];
+const THEME_NUM = { light: 0, dark: 1, system: 2 };
+const lightMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+
+// 跟随系统时以后台读到的 AppsUseLightTheme 为准，matchMedia 只在后台暂时取不到值时兜底。
+// 两边用同一个注册表值，避免 Windows 的「Windows 模式」和「应用模式」分开设置时一深一浅。
+function resolveTheme(mode) {
+  if (mode === 'system') {
+    const light = state.systemLight === null
+      ? !!(lightMq && lightMq.matches)
+      : state.systemLight;
+    return light ? 'light' : 'dark';
+  }
+  return mode === 'dark' ? 'dark' : 'light';
 }
 
-function initTheme() {
-  let saved = null;
-  try { saved = localStorage.getItem('gogospot-theme'); } catch (e) {}
-  if (saved === 'dark' || saved === 'light') { applyTheme(saved); return; }
-  const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-  applyTheme(prefersLight ? 'light' : 'dark');
+// sync 为真时把模式同步给后台：主题是全局设置，悬浮清单跟着一起换
+function applyThemeMode(mode, sync) {
+  const m = THEME_NUM[mode] === undefined ? 'system' : mode;
+  state.themeMode = m;
+  document.documentElement.setAttribute('data-theme', resolveTheme(m));
+  if (el.themeSw) el.themeSw.setAttribute('data-mode', m);
+  if (sync) fetch('/api/theme?mode=' + m, { method: 'POST' }).catch(() => {});
+}
+
+async function initTheme() {
+  try {
+    const s = await fetch('/api/settings').then((r) => r.json());
+    if (s && typeof s.themeMode === 'number') {
+      if (typeof s.systemLight === 'boolean') state.systemLight = s.systemLight;
+      applyThemeMode(THEME_BY_NUM[s.themeMode] || 'system');
+      return;
+    }
+  } catch (e) { /* 后台没起来就先跟随系统 */ }
+  applyThemeMode('system');
+}
+
+// 跟随系统时每 3 秒跟后台对一次；系统主题变了，控制台和悬浮清单一起换。
+async function syncSystemTheme() {
+  if (state.themeMode !== 'system') return;
+  try {
+    const s = await fetch('/api/settings', { cache: 'no-store' }).then((r) => r.json());
+    if (typeof s.systemLight === 'boolean' && s.systemLight !== state.systemLight) {
+      state.systemLight = s.systemLight;
+      applyThemeMode('system');
+    }
+  } catch (e) { /* 后台没起来就保持当前 */ }
+}
+setInterval(syncSystemTheme, 3000);
+
+// 浏览器自己的深浅信号只当触发器；真正的值仍从后台取
+if (lightMq) {
+  const onScheme = () => { if (state.themeMode === 'system') syncSystemTheme(); };
+  if (lightMq.addEventListener) lightMq.addEventListener('change', onScheme);
+  else if (lightMq.addListener) lightMq.addListener(onScheme);
 }
 
 /* ---------------------------------------------------------------- Toast */
@@ -1266,7 +1377,7 @@ setInterval(() => {
     const r = progressRatio(t);
     fill.style.width = (r * 100).toFixed(1) + '%';
     node.className = 'task-progress ' +
-      (r <= 0.6 ? 'is-green' : (r <= 0.8 ? 'is-yellow' : 'is-red'));
+      (r <= 0.35 ? 'is-green' : (r <= 0.7 ? 'is-yellow' : 'is-red'));
   });
 }, 1000);
 
@@ -1570,10 +1681,14 @@ function bind() {
   el.btnClearDone.addEventListener('click', clearDone);
 
   // 主题
-  el.btnTheme.addEventListener('click', () => {
-    const cur = document.documentElement.getAttribute('data-theme');
-    applyTheme(cur === 'dark' ? 'light' : 'dark');
-  });
+  if (el.themeSw) {
+    el.themeSw.querySelectorAll('.theme-sw-stop').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        applyThemeMode(btn.dataset.mode, true);
+        if (btn.dataset.mode === 'system') syncSystemTheme();   // 切回跟随系统时立刻取一次
+      });
+    });
+  }
 
   // 关联材料：粘贴 / 手填 / 拖文件
   if (el.btnStart) {
@@ -1766,7 +1881,7 @@ async function init() {
   el.todayLabel.textContent = `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 · ${week}`;
 
   bind();
-  setEstimate(0);
+  setEstimate(60);
   syncDue();
   paintRepeatChips();      // HTML 里写死的 is-on 也要补上 aria-pressed
   await loadTasks();

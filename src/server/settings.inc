@@ -1,8 +1,11 @@
 // ---- 设置 ----
 
+// 首次运行（没有 settings.json）时用这一组：清单显示、置顶、不写开机启动、主题跟随系统
 static bool gWidgetEnabled = true;
-static bool gTopmost = false;        // 悬浮清单是否压在其他窗口上面
-static bool gAutoStart = false;      // 是否写进开机启动项
+static bool gTopmost = true;         // 悬浮清单是否压在其他窗口上面
+static bool gAutoStart = false;      // 是否写进开机启动项，默认关闭，避免未经同意改 Run 项
+// 主题模式：0 日间、1 夜间、2 跟随系统。旧版本只有 themeLight 布尔值，读到时自动换算
+static int  gThemeMode = 2;
 
 // HTTP 线程和悬浮清单线程都会改设置，写文件必须串起来，否则 .tmp 互相踩
 static std::mutex gSettingsMutex;
@@ -24,12 +27,45 @@ static bool readBoolField(const string& s, const char* key, bool& out) {
     return false;
 }
 
+// 数字字段：找 "key" 后面第一个整数
+static bool readIntField(const string& s, const char* key, int& out) {
+    string k = string("\"") + key + "\"";
+    size_t p = s.find(k);
+    if (p == string::npos) return false;
+    size_t c = s.find(':', p + k.size());
+    if (c == string::npos) return false;
+    size_t t = s.find_first_not_of(" \t\r\n", c + 1);
+    if (t == string::npos) return false;
+    if (t >= s.size() || !(s[t] == '-' || (s[t] >= '0' && s[t] <= '9'))) return false;
+    out = atoi(s.c_str() + t);
+    return true;
+}
+
+// 系统「应用模式」：AppsUseLightTheme = 1 是浅色。控制台的跟随系统也读这个值，
+// 避免它用浏览器的 prefers-color-scheme 和悬浮清单得出不同结果。
+static bool systemUsesLightTheme() {
+    HKEY k = nullptr;
+    DWORD light = 1, sz = sizeof(light), type = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_READ, &k) == ERROR_SUCCESS) {
+        RegQueryValueExW(k, L"AppsUseLightTheme", nullptr, &type, (LPBYTE)&light, &sz);
+        RegCloseKey(k);
+    }
+    return light != 0;
+}
+
 static void loadSettings() {
     string raw;
     if (!readFileAll(gSettingsFile, raw)) return;
     readBoolField(raw, "widget", gWidgetEnabled);
     readBoolField(raw, "topmost", gTopmost);
     readBoolField(raw, "autostart", gAutoStart);
+    if (!readIntField(raw, "themeMode", gThemeMode)) {
+        bool oldLight = false;                       // 老版本：themeLight 布尔
+        if (readBoolField(raw, "themeLight", oldLight)) gThemeMode = oldLight ? 0 : 1;
+    }
+    if (gThemeMode < 0 || gThemeMode > 2) gThemeMode = 2;
 }
 
 static void saveSettings() {
@@ -37,7 +73,8 @@ static void saveSettings() {
     writeFileAtomic(gSettingsFile,
         string("{\n  \"widget\": ") + (gWidgetEnabled ? "true" : "false") +
         ",\n  \"topmost\": " + (gTopmost ? "true" : "false") +
-        ",\n  \"autostart\": " + (gAutoStart ? "true" : "false") + "\n}\n");
+        ",\n  \"autostart\": " + (gAutoStart ? "true" : "false") +
+        ",\n  \"themeMode\": " + std::to_string(gThemeMode) + "\n}\n");
 }
 
 bool appWidgetEnabled() { return gWidgetEnabled; }
@@ -54,6 +91,15 @@ void appSetTopmost(bool on) {
     gTopmost = on;
     saveSettings();
     widgetNotifyTopmost(on);
+}
+
+int appThemeMode() { return gThemeMode; }
+
+void appSetThemeMode(int mode) {
+    if (mode < 0 || mode > 2) return;
+    gThemeMode = mode;
+    saveSettings();
+    widgetNotifyTheme(mode);
 }
 
 // 写 HKCU 的 Run 项。路径每次现取，exe 挪了位置也能对上。

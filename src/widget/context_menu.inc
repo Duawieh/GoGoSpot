@@ -82,9 +82,9 @@ static bool menuPaint(HWND h) {
         RectF box(0.5f, 0.5f, g_menuLogicalW - 1.0f, menuHeight(g_menuItems, g_menuCount) - 1.0f);
         GraphicsPath p;
         roundRect(p, box, 11.0f);
-        SolidBrush bg(Color(250, 25, 29, 38));
+        SolidBrush bg(pal().menuBg);
         g.FillPath(&bg, &p);
-        Pen pen(Color(46, 255, 255, 255), 1.0f);
+        Pen pen(pal().menuBorder, 1.0f);
         g.DrawPath(&pen, &p);
 
         // 菜单可能从托盘线程弹出，字体在本地建，不共用悬浮清单的那几个
@@ -96,16 +96,16 @@ static bool menuPaint(HWND h) {
             if (i == g_menuHover) {
                 GraphicsPath hp;
                 roundRect(hp, r, 7.0f);
-                SolidBrush hb(Color(40, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()));
+                SolidBrush hb(Color(40, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()));
                 g.FillPath(&hb, &hp);
             }
             drawText(g, g_menuItems[i].label, &font,
                      RectF(r.X + 10, r.Y, r.Width - 16, r.Height),
-                     i == g_menuHover ? C_TEXT : C_TEXT_DIM, true, 0);
+                     i == g_menuHover ? pal().text : pal().textDim, true, 0);
 
             y += MN_ROW;
             if (g_menuItems[i].gap) {
-                Pen sp(Color(26, 255, 255, 255), 1.0f);
+                Pen sp(pal().menuSep, 1.0f);
                 g.DrawLine(&sp, 12.0f, y + 4, g_menuLogicalW - 12.0f, y + 4);
                 y += MN_GAP;
             }
@@ -270,24 +270,29 @@ static void placeWindow(int screenX, int screenY, int w, int h) {
 
 static void present();
 
-// Win+D 会将桌面提升至前景并遮挡悬浮清单；检测窗口中心所属窗口，
-// 若命中桌面图标层则提升悬浮清单的 Z 序；被普通窗口遮挡时不调整。
-// 前台是不是全屏程序（全屏视频、游戏、演示）。用系统的通知状态判断，
-// 该状态比窗口矩形检测更准确：最大化窗口覆盖工作区但不属于全屏。
+// 前台是不是全屏程序：只看焦点窗口的矩形——尺寸等于屏幕，或四边盖住屏幕，就算全屏。
+// 不用 SHQueryUserNotificationState：它要问 shell，实测约 196µs，是这里几个窗口 API
+// 加起来的近百倍；而且它把「最大化窗口」也报成忙，正是之前误藏悬浮清单的来源。
 static bool fullscreenAppInFront() {
-    // 这些符号需 NTDDI_VISTA 才在头文件中暴露，改为运行时获取函数地址。
-    // 返回值：1 不在 / 2 忙（全屏、演示）/ 3 D3D 全屏 / 4 演示模式 / 5 正常 / 6 静默 / 7 应用
-    typedef HRESULT (WINAPI *QueryFn)(int*);
-    static QueryFn fn = reinterpret_cast<QueryFn>(reinterpret_cast<void*>(
-        GetProcAddress(GetModuleHandleW(L"shell32.dll"), "SHQueryUserNotificationState")));
-    if (fn) {
-        int st = 5;
-        if (SUCCEEDED(fn(&st))) return st == 2 || st == 3 || st == 4;
-    }
-
-    // 旧版系统不支持该 API，改用窗口矩形检测；窗口需覆盖工作区和任务栏才视为全屏
     HWND fg = GetForegroundWindow();
     if (!fg || fg == g_hwnd) return false;
+
+    // 桌面和任务栏本身就铺满屏幕（Progman 正好是 0,0 屏幕宽高），但它们不是「全屏程序」。
+    // 点一下桌面前台就变成它，不排除的话悬浮清单会立刻被藏起来；
+    // 启动时前台往往也是桌面，于是「刚启动就不见」。
+    wchar_t cls[64] = {0};
+    GetClassNameW(fg, cls, 64);
+    if (wcscmp(cls, L"Progman") == 0 ||
+        wcscmp(cls, L"WorkerW") == 0 ||
+        wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
+        wcscmp(cls, L"SysListView32") == 0 ||
+        wcscmp(cls, L"Shell_TrayWnd") == 0) {
+        return false;
+    }
+
+    // 最大化窗口即使盖住整个屏幕（任务栏自动隐藏时就是这样）也不算全屏。
+    // 只看矩形会把 VS Code 这类最大化窗口误判成全屏，启动时把悬浮清单藏掉。
+    if (IsZoomed(fg)) return false;
 
     RECT r{};
     if (!GetWindowRect(fg, &r)) return false;
@@ -295,7 +300,12 @@ static bool fullscreenAppInFront() {
     HMONITOR mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
-    if (!GetMonitorInfoW(mon, &mi)) return false;
+    if (!mon || !GetMonitorInfoW(mon, &mi)) return false;
+
+    // 任务栏可见时最大化窗口只盖住工作区，高度差一个任务栏，两种判定都不会命中
+    int mw = mi.rcMonitor.right - mi.rcMonitor.left;
+    int mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    if (r.right - r.left == mw && r.bottom - r.top == mh) return true;
 
     return r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top &&
            r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom;
@@ -308,6 +318,12 @@ static void applyTopmost() {
 
     if (g_topmost) {
         SetWindowLongPtrW(g_hwnd, GWLP_HWNDPARENT, 0);
+        // SetWindowPos(HWND_TOPMOST) 在有些情况下不生效（实测新起的实例样式位就是没加上），
+        // 这里直接把 WS_EX_TOPMOST 写进扩展样式，再让 SetWindowPos 去调整 Z 序
+        LONG_PTR ex = GetWindowLongPtrW(g_hwnd, GWL_EXSTYLE);
+        if (!(ex & WS_EX_TOPMOST)) {
+            SetWindowLongPtrW(g_hwnd, GWL_EXSTYLE, ex | WS_EX_TOPMOST);
+        }
         SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     } else {
@@ -328,16 +344,19 @@ static void applyTopmost() {
 }
 
 // 标题栏那个置顶按钮：改的就是“悬浮清单置顶”这个设置，和控制台同一个值。
-// 先更新本地状态以提供即时反馈，再发送请求并持久化设置；
-// 后台存完会回一条 WM_APP_TOPMOST，值一样，等于确认一次。
+// 状态以后台为准：只发请求，等它回 WM_APP_TOPMOST 再切。
+// 本地先改的话，请求失败就会变成「窗口没置顶、设置里却写着置顶」，
+// 这种不一致会一直持续到下次重启。
 static void toggleTopmost() {
     bool on = !g_topmost;
-    g_topmost = on;
-    applyTopmost();
-    InvalidateRect(g_hwnd, nullptr, FALSE);
 
     if (g_port == 0) findServerPort();
-    if (g_port == 0) return;
+    if (g_port == 0) {                  // 连不上后台就本地生效，至少按钮有反应
+        g_topmost = on;
+        applyTopmost();
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+        return;
+    }
     string body;
     httpRequest(L"POST", wstring(L"/api/topmost?on=") + (on ? L"1" : L"0"), body);
 }
@@ -346,19 +365,39 @@ static void keepAboveDesktop() {
     // 右键菜单展开时不动 Z 序：菜单是独立置顶窗口，重新抢置顶会把它压下去
     if (g_menuOpen) return;
 
+    // 设置里的置顶是唯一事实来源。窗口本地可能在启动阶段读到旧值，
+    // 或者错过一次通知；每轮守护都对齐，避免「设置里开着、窗口却没置顶」。
+    bool wantTopmost = appTopmostEnabled();
+    if (g_topmost != wantTopmost) {
+        g_topmost = wantTopmost;
+        applyTopmost();
+        return;
+    }
+
     // 置顶模式：保持在普通窗口之上；前台为全屏程序时暂时隐藏，避免干扰
     if (g_topmost) {
+        // 第一轮守护把「启动时已经在全屏」也当作刚切进全屏；退出全屏后恢复。
         bool fs = fullscreenAppInFront();
-        if (fs && !g_hiddenForFullscreen) {
+        bool entered = fs && !g_fsPrev;
+        g_fsPrev = fs;
+
+        if (entered && !g_hiddenForFullscreen) {
             g_hiddenForFullscreen = true;
             ShowWindow(g_hwnd, SW_HIDE);
         } else if (!fs && g_hiddenForFullscreen) {
             g_hiddenForFullscreen = false;
             if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
         }
-        if (!fs) {
+        // 置顶状态有丢失的情况（窗口会永久沉到普通层，用户看到的就是“悬浮清单不见了”）。
+        // 每 600ms 校验一次样式位，缺了就整段重设。
+        // 不看 fs：前台是不是全屏跟置顶样式无关，之前放在 !fs 里面，
+        // 全屏时这条就永远不跑，启动阶段没加上就一直沉在下面。
+        LONG_PTR ex = GetWindowLongPtrW(g_hwnd, GWL_EXSTYLE);
+        if (ex & WS_EX_TOPMOST) {
             SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        } else {
+            applyTopmost();
         }
         return;
     }
@@ -434,8 +473,10 @@ static void updatePillTarget() {
 }
 
 // 读 Windows 的“应用模式”：AppsUseLightTheme = 1 是浅色，走日间配色。
-// 每三秒跟着刷新一次，用户在设置里切主题不用重启悬浮清单。
-static void refreshDayMode() {
+// 切换日间 / 夜间：配色整组换，毛玻璃跟着开关，旧背景作废。
+// 主题来自设置文件（控制台那个开关），不再跟随系统的应用模式。
+// 系统「应用模式」的当前值：跟随系统时用它决定深浅
+static bool systemPrefersLight() {
     HKEY k = nullptr;
     DWORD light = 1, sz = sizeof(light), type = 0;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
@@ -444,12 +485,25 @@ static void refreshDayMode() {
         RegQueryValueExW(k, L"AppsUseLightTheme", nullptr, &type, (LPBYTE)&light, &sz);
         RegCloseKey(k);
     }
-    g_dayMode = (light != 0);
+    return light != 0;
+}
+
+// 三档模式换算成当前该用哪套配色
+static bool themeModeIsLight(int mode) {
+    if (mode == 0) return true;
+    if (mode == 1) return false;
+    return systemPrefersLight();
+}
+
+static void setDayMode(bool light) {
+    g_dayMode = light;
+    g_pal = light ? static_cast<const Palette*>(&g_dayPalette)
+                  : static_cast<const Palette*>(&g_nightPalette);
+    if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
 // 算窄条完全展开的宽度，右边放不下就缩，缩到读不下标题就不显示。
 static void syncPillWidth() {
-    refreshDayMode();
 
     RECT wr{};
     GetWindowRect(g_hwnd, &wr);
@@ -490,61 +544,6 @@ static void syncPillWidth() {
 
     g_pillFull = full;
     updatePillTarget();
-}
-
-static void captureBlurred(int x, int y) {
-    if (!g_bgDC || !g_rawDC || !g_smallDC) return;
-
-    HDC screen = GetDC(nullptr);
-    if (!screen) return;
-    // 抓的是窗口左上角这一块。收起态窗口比卡片小，多抓的部分正好是展开后会盖住的地方
-    BitBlt(g_rawDC, 0, 0, g_surfW, g_surfH, screen, x, y, SRCCOPY);
-    ReleaseDC(nullptr, screen);
-
-    int sw = g_surfW / 6; if (sw < 4) sw = 4;
-    int sh = g_surfH / 6; if (sh < 4) sh = 4;
-
-    SetStretchBltMode(g_smallDC, HALFTONE);
-    SetBrushOrgEx(g_smallDC, 0, 0, nullptr);
-    StretchBlt(g_smallDC, 0, 0, sw, sh, g_rawDC, 0, 0, g_surfW, g_surfH, SRCCOPY);
-
-    SetStretchBltMode(g_bgDC, HALFTONE);
-    SetBrushOrgEx(g_bgDC, 0, 0, nullptr);
-    StretchBlt(g_bgDC, 0, 0, g_surfW, g_surfH, g_smallDC, 0, 0, sw, sh, SRCCOPY);
-
-    // BitBlt 不写 alpha，同时压暗，保证浅色壁纸上的文字对比度。
-    if (g_bgBits) {
-        int n = g_surfW * g_surfH;
-        for (int i = 0; i < n; ++i) {
-            BYTE* p = g_bgBits + (size_t)i * 4;
-            p[0] = (BYTE)(p[0] * 45 / 100);
-            p[1] = (BYTE)(p[1] * 45 / 100);
-            p[2] = (BYTE)(p[2] * 45 / 100);
-            p[3] = 255;
-        }
-    }
-    g_bgReady = true;
-}
-
-// 隐藏窗口后等待合成器提交新帧，再执行屏幕捕获；
-// 等待合成器更新画面后再调用 BitBlt，避免模糊背景缓存包含上一帧任务列表。
-static void flushComposition() {
-    typedef HRESULT (WINAPI *PFN_Flush)(void);
-    static PFN_Flush fn = reinterpret_cast<PFN_Flush>(reinterpret_cast<void*>(
-        GetProcAddress(LoadLibraryW(L"dwmapi.dll"), "DwmFlush")));
-    if (fn) fn();
-}
-
-// 抓取模糊背景前隐藏窗口，避免画面包含窗口自身及上一帧任务列表。
-// 隐藏和抓取在同一消息中完成，以避免产生可见闪烁。
-static void recaptureBackground() {
-    if (!g_hwnd) return;
-    RECT wr{};
-    GetWindowRect(g_hwnd, &wr);
-    ShowWindow(g_hwnd, SW_HIDE);
-    flushComposition();
-    captureBlurred(wr.left, wr.top);
-    if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
 }
 
 // 窗口一藏一显，系统的鼠标离开追踪会失效；重新注册一次，
@@ -589,6 +588,7 @@ static void resolveCardPos(int& x, int& y, int w, int h) {
 // 此时将指针移至卡片区域，避免失焦逻辑立即触发收起。
 static void expandWidget(bool bringCursor = false) {
     if (g_expanded) return;
+    refreshAfterInteraction();      // 被唤起时立刻取一次最新数据
 
     // 窄条可能还在滑动，先让它落位。
     KillTimer(g_hwnd, TIMER_SLIDE);
@@ -602,12 +602,6 @@ static void expandWidget(bool bringCursor = false) {
 
     int cardX = wr.left, cardY = wr.top;
     resolveCardPos(cardX, cardY, g_winW, g_winH);
-
-    // 先隐藏窗口再捕获背景。此时圆点仍显示在屏幕上，且位于卡片左上角，
-    // 同时抓取圆点会在卡片圆角外形成模糊残影；抓取区域应与卡片最终位置一致。
-    ShowWindow(g_hwnd, SW_HIDE);
-    flushComposition();
-    captureBlurred(cardX, cardY);
 
     g_expanded = true;
     g_fade = 0.0f;
@@ -686,15 +680,7 @@ static void computeSurface() {
 static void destroySurface() {
     if (g_bmp)   { DeleteObject(g_bmp);   g_bmp = nullptr; }
     if (g_memDC) { DeleteDC(g_memDC);     g_memDC = nullptr; }
-    if (g_bgDC)  { DeleteDC(g_bgDC);      g_bgDC = nullptr; }
-    if (g_rawDC) { DeleteDC(g_rawDC);     g_rawDC = nullptr; }
-    if (g_smallDC) { DeleteDC(g_smallDC); g_smallDC = nullptr; }
-    if (g_bgBmp)   { DeleteObject(g_bgBmp);   g_bgBmp = nullptr; }
-    if (g_rawBmp)  { DeleteObject(g_rawBmp);  g_rawBmp = nullptr; }
-    if (g_smallBmp){ DeleteObject(g_smallBmp); g_smallBmp = nullptr; }
     g_bits = nullptr;
-    g_bgBits = nullptr;
-    g_bgReady = false;
 }
 
 static void createSurface() {
@@ -714,26 +700,5 @@ static void createSurface() {
     g_memDC = CreateCompatibleDC(g_screenDC);
     if (g_bmp) SelectObject(g_memDC, g_bmp);
 
-    // 抓屏模糊用的三张离屏位图
-    auto makeDib = [](int w, int h, HDC ref, BYTE** bitsOut, HBITMAP* bmpOut) -> HDC {
-        BITMAPINFO b{};
-        b.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        b.bmiHeader.biWidth = w;
-        b.bmiHeader.biHeight = -h;
-        b.bmiHeader.biPlanes = 1;
-        b.bmiHeader.biBitCount = 32;
-        b.bmiHeader.biCompression = BI_RGB;
-        void* p = nullptr;
-        HBITMAP bm = CreateDIBSection(ref, &b, DIB_RGB_COLORS, &p, nullptr, 0);
-        HDC dc = CreateCompatibleDC(ref);
-        if (bm) SelectObject(dc, bm);
-        if (bitsOut) *bitsOut = (BYTE*)p;
-        if (bmpOut) *bmpOut = bm;
-        return dc;
-    };
-
-    g_bgDC    = makeDib(g_surfW, g_surfH, g_screenDC, &g_bgBits, &g_bgBmp);
-    g_rawDC   = makeDib(g_surfW, g_surfH, g_screenDC, nullptr, &g_rawBmp);
-    g_smallDC = makeDib(g_surfW / 6 + 2, g_surfH / 6 + 2, g_screenDC, nullptr, &g_smallBmp);
 }
 

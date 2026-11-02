@@ -33,6 +33,12 @@ static Color progressColorOf(const Task& t, REAL ratio);
 //   日间——浅色磨砂底 + 暖色渐变，浅壁纸上不扎眼；
 //   夜间——纯灰块 + 边缘外发光，颜色只留在那圈光里。
 // 透明度都用 smoothstep，起步慢、中段陡、到满宽前就收平。
+// 低透明度的描边 / 填充：夜间用白，日间用深色。
+// 浅色卡片上白色描边等于没画，输入框、分隔线、档位按钮都会「消失」。
+static Color ink(BYTE a) {
+    return Color(a, pal().inkTone.GetR(), pal().inkTone.GetG(), pal().inkTone.GetB());
+}
+
 static void paintPill(Graphics& g, REAL vis, REAL full) {
     const Task* t = pillTask();
     if (!t || vis <= 0 || full <= 0) return;
@@ -55,27 +61,37 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
     GraphicsPath p;
     roundRect(p, r, rad);
 
-    if (g_dayMode) {
+    if (!pal().glow()) {
         // 浅色背景下通过投影增强面板底色的层次感
         for (int i = 3; i >= 1; --i) {
             REAL grow = (REAL)i * 1.2f;
             GraphicsPath sp;
             roundRect(sp, RectF(r.X - grow, r.Y - grow + 1.5f,
                                 r.Width + grow * 2, r.Height + grow * 2), rad + grow);
-            SolidBrush sb(Color(S((BYTE)(8 + (3 - i) * 5)), 0, 0, 0));
+            SolidBrush sb(Color(S((BYTE)(8 + (3 - i) * 5)), 24, 38, 76));
             g.FillPath(&sb, &sp);
         }
 
-        SolidBrush base(Color(A(232), 249, 249, 252));
+        // 日间：底接近白，暖色只当极薄一层；描边也用浅色，
+        // 深棕描边在亮背景上会被看成一条黑边
+        SolidBrush base(Color(A(pal().pillFillA), pal().pillFill.GetR(),
+                              pal().pillFill.GetG(), pal().pillFill.GetB()));
         g.FillPath(&base, &p);
 
-        BYTE gA = g_pillHover ? 76 : 58;
-        LinearGradientBrush wb(PointF(r.X, r.Y), PointF(r.X + r.Width, r.Y),
-                               Color(A(gA), warm.GetR(), warm.GetG(), warm.GetB()),
-                               Color(A(12), warm.GetR(), warm.GetG(), warm.GetB()));
-        g.FillPath(&wb, &p);
+        // 左三分之一从暖色渐到白，右边保持纯白：整条铺渐变会把整块染成土色
+        REAL w3 = r.Width / 3.0f;
+        GraphicsState st = g.Save();
+        g.SetClip(&p);
+        // 日间单独取浅色：直接拿 warm（深棕金）压上去会发橙；夜间 tint 就等于语义色
+        Color gc = (u == URG_RED) ? pal().tintRed : pal().tintAmber;
+        BYTE gA = g_pillHover ? 118 : 92;
+        LinearGradientBrush wb(PointF(r.X, r.Y), PointF(r.X + w3, r.Y),
+                               Color(A(gA), gc.GetR(), gc.GetG(), gc.GetB()),
+                               Color(0, 255, 255, 255));
+        g.FillRectangle(&wb, r.X, r.Y, w3, r.Height);
+        g.Restore(st);
 
-        Pen border(Color(A(g_pillHover ? 128 : 96), warm.GetR(), warm.GetG(), warm.GetB()), 1.0f);
+        Pen border(Color(A(g_pillHover ? 64 : 44), warm.GetR(), warm.GetG(), warm.GetB()), 1.0f);
         g.DrawPath(&border, &p);
     } else {
         // 外发光：九层往外扩的圆角矩形，越外越淡。深灰块靠这圈光浮起来，
@@ -108,11 +124,12 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
             g.Restore(st);
         }
 
-        BYTE bg = g_pillHover ? 58 : 40;
-        SolidBrush base(Color(A(255), bg, (BYTE)(bg + 2), (BYTE)(bg + 10)));
+        const Color& fill = g_pillHover ? pal().pillFillHover : pal().pillFill;
+        SolidBrush base(Color(A(pal().pillFillA), fill.GetR(), fill.GetG(), fill.GetB()));
         g.FillPath(&base, &p);
 
-        Pen hi(Color(A(30), 255, 255, 255), 1.0f);
+        Pen hi(Color(A(pal().pillEdge.GetA()), pal().pillEdge.GetR(),
+                     pal().pillEdge.GetG(), pal().pillEdge.GetB()), 1.0f);
         g.DrawPath(&hi, &p);
     }
 
@@ -134,7 +151,7 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
                 // 没填预估：整圈呼吸，不表示具体比例。环形固定用紫色，
                 // 不跟紧急程度走——那是行内填充和圆点外圈的事。
                 BYTE a = (BYTE)(A((BYTE)(130 + 105 * breatheK())) * anim);
-                Pen ringPen(Color(a, C_PURPLE.GetR(), C_PURPLE.GetG(), C_PURPLE.GetB()), 2.6f);
+                Pen ringPen(Color(a, pal().purple.GetR(), pal().purple.GetG(), pal().purple.GetB()), 2.6f);
                 ringPen.SetStartCap(LineCapRound);
                 ringPen.SetEndCap(LineCapRound);
                 g.DrawPath(&ringPen, &tp);
@@ -194,19 +211,18 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
     GraphicsState textState = g.Save();
     g.SetClip(r, CombineModeIntersect);
 
-    Color titleCol = g_dayMode ? Color(A(255), 34, 38, 46)
-                               : Color(A(255), 248, 249, 252);
+    Color titleCol(A(255), pal().title.GetR(), pal().title.GetG(), pal().title.GetB());
     drawText(g, t->title, titleFont(), RectF(left, r.Y, titleW, r.Height),
              titleCol, true, 0);
 
     if (dueW > 0) {
         Color dueCol;
         if (u == URG_RED) {
-            dueCol = g_dayMode ? Color(A(255), 172, 52, 76) : Color(A(255), 255, 186, 198);
+            dueCol = Color(A(255), pal().dueRed.GetR(), pal().dueRed.GetG(), pal().dueRed.GetB());
         } else if (u == URG_YELLOW) {
-            dueCol = g_dayMode ? Color(A(255), 152, 96, 18) : Color(A(255), 255, 214, 150);
+            dueCol = Color(A(255), pal().dueAmber.GetR(), pal().dueAmber.GetG(), pal().dueAmber.GetB());
         } else {
-            dueCol = g_dayMode ? Color(A(255), 104, 72, 166) : Color(A(255), 214, 198, 255);
+            dueCol = Color(A(255), pal().duePurple.GetR(), pal().duePurple.GetG(), pal().duePurple.GetB());
         }
 
         if (running) {
@@ -215,7 +231,7 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
             // 上下各留 7px——再往上顶就贴边了
             drawText(g, due, smallFont(), RectF(right - dueW, r.Y + 3.5f, dueW, 18),
                      dueCol, true, 2);
-            Color tailCol = hasEstimate(*t) ? progressColorOf(*t, runRatio) : C_PURPLE;
+            Color tailCol = hasEstimate(*t) ? progressColorOf(*t, runRatio) : pal().purple;
             drawText(g, tail, smallFont(), RectF(right - dueW, r.Y + 18.5f, dueW, 18),
                      tailCol, true, 2);
         } else {
@@ -230,20 +246,24 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
 // 圆点外圈：红色套红圈，黄色套黄圈；八层柔光 + 实环 + 白芯，画在最底层。
 static void paintUrgencyRing(Graphics& g, REAL cx, REAL cy, Urgency u) {
     if (u == URG_NONE) return;
-    const Color c = (u == URG_RED) ? C_RED : C_AMBER;
+    // 日间：深色环在亮底上像黑圈，换成亮一档的金 / 红，才像在发光
+    const Color& c = (u == URG_RED) ? pal().haloRed : pal().haloAmber;
 
     REAL r = RING_R_IDLE + (RING_R - RING_R_IDLE) * g_ringT;
 
-    // 八层柔光：越往外越淡，铺到环外 8px
-    for (int i = 8; i >= 1; --i) {
-        REAL t = i / 8.0f;
-        REAL rr = r + i * 1.0f;
-        BYTE a = (BYTE)(62 * (1 - t) * (1 - t) + 8);
-        Pen glow(Color(a, c.GetR(), c.GetG(), c.GetB()), 4.0f);
-        g.DrawEllipse(&glow, cx - rr, cy - rr, rr * 2, rr * 2);
+    // 八层柔光：越往外越淡，铺到环外 8px。
+    // 日间不画：这些低透明度层叠在亮背景上是一圈灰边，看着像阴影而不是发光。
+    if (pal().glow()) {
+        for (int i = 8; i >= 1; --i) {
+            REAL t = i / 8.0f;
+            REAL rr = r + i * 1.0f;
+            BYTE a = (BYTE)(62 * (1 - t) * (1 - t) + 8);
+            Pen glow(Color(a, c.GetR(), c.GetG(), c.GetB()), 4.0f);
+            g.DrawEllipse(&glow, cx - rr, cy - rr, rr * 2, rr * 2);
+        }
     }
 
-    Pen pen(Color(245, c.GetR(), c.GetG(), c.GetB()), 2.8f);
+    Pen pen(Color(245, c.GetR(), c.GetG(), c.GetB()), 4.2f);
     g.DrawEllipse(&pen, cx - r, cy - r, r * 2, r * 2);
 
     // 白色高光增强环形进度的层次感
@@ -275,7 +295,7 @@ static void paintDot(Graphics& g) {
             if (!hasEstimate(*pt)) {
                 // 未填写预估时以紫色呼吸环表示任务处于进行状态，不显示具体进度比例。
                 BYTE a = (BYTE)(255 * g_dotRingA * (0.55f + 0.45f * breatheK()) * anim);
-                Pen pen(Color(a, C_PURPLE.GetR(), C_PURPLE.GetG(), C_PURPLE.GetB()), 5.2f);
+                Pen pen(Color(a, pal().purple.GetR(), pal().purple.GetG(), pal().purple.GetB()), 5.2f);
                 g.DrawEllipse(&pen, cx - rr, cy - rr, rr * 2, rr * 2);
             } else {
                 r2 *= anim;
@@ -303,8 +323,9 @@ static void paintDot(Graphics& g) {
     }
 
     // 深色外圈用于提升浅色壁纸上的边缘对比度；负空间透明，因此提高该层不透明度。
-    SolidBrush ring(Color(226, 12, 15, 22));
-    g.FillEllipse(&ring, cx - 9.2f, cy - 9.2f, 18.4f, 18.4f);
+    // 半径比标识（20px，半径 10）再大一点，白底才留得住边，也把环内空隙填满
+    SolidBrush ring(pal().ringPad);
+    g.FillEllipse(&ring, cx - 11.6f, cy - 11.6f, 23.2f, 23.2f);
 
     drawMark(g, cx, cy, 20.0f);
 }
@@ -352,16 +373,16 @@ static void paintChip(Graphics& g, const RectF& r, const wchar_t* label, bool on
     GraphicsPath p;
     roundRect(p, r, 12.0f);
     if (on) {
-        SolidBrush b(Color(58, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()));
+        SolidBrush b(Color(58, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()));
         g.FillPath(&b, &p);
-        Pen pen(Color(150, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()), 1.0f);
+        Pen pen(Color(150, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()), 1.0f);
         g.DrawPath(&pen, &p);
     } else {
-        SolidBrush b(Color(26, 255, 255, 255));
+        SolidBrush b(ink(26));
         g.FillPath(&b, &p);
     }
     drawText(g, label, smallFont(), r,
-             on ? Color(255, 236, 246, 255) : C_TEXT_DIM, true, 1);
+             on ? Color(255, 236, 246, 255) : pal().textDim, true, 1);
 }
 
 // 选择来源的两行菜单，浮在“关联材料”那一行上方
@@ -372,26 +393,26 @@ static void paintPickMenu(Graphics& g) {
 
     GraphicsPath p;
     roundRect(p, box, 10.0f);
-    SolidBrush bg(Color(248, 26, 30, 38));
+    SolidBrush bg(pal().panelBg);
     g.FillPath(&bg, &p);
-    Pen pen(Color(38, 255, 255, 255), 1.0f);
+    Pen pen(ink(38), 1.0f);
     g.DrawPath(&pen, &p);
 
     RectF f = pickMenuFile(), d = pickMenuFolder();
     f.X += SHADOW; f.Y += SHADOW;
     d.X += SHADOW; d.Y += SHADOW;
-    drawText(g, L"选择文件", smallFont(), f, C_TEXT_DIM, true, 0);
-    drawText(g, L"选择文件夹", smallFont(), d, C_TEXT_DIM, true, 0);
+    drawText(g, L"选择文件", smallFont(), f, pal().textDim, true, 0);
+    drawText(g, L"选择文件夹", smallFont(), d, pal().textDim, true, 0);
 }
 
 // 编辑面板：底栏整块让出来，上面加一排截止、一排预估
 static void paintEditPanel(Graphics& g) {
     const REAL top = (REAL)SHADOW + panelTop();
 
-    // 压一层暗底，和上面的任务列表分开
-    SolidBrush pb(Color(30, 0, 0, 0));
+    // 压一层底色，和上面的任务列表分开：夜间压暗，日间压一点点深灰
+    SolidBrush pb(pal().popupBg);
     g.FillRectangle(&pb, (REAL)SHADOW, top, (REAL)CARD_W, (REAL)PANEL_H);
-        Pen sep(Color(18, 255, 255, 255), 1.0f);
+        Pen sep(ink(18), 1.0f);
     g.DrawLine(&sep, SHADOW + 14.0f, top + 0.5f, SHADOW + CARD_W - 14.0f, top + 0.5f);
 
     // 输入框
@@ -399,34 +420,41 @@ static void paintEditPanel(Graphics& g) {
               (REAL)CARD_W - 20, 30);
     GraphicsPath ip;
     roundRect(ip, inR, 8.0f);
-    SolidBrush ib(Color(34, 255, 255, 255));
+    SolidBrush ib(ink(34));
     g.FillPath(&ib, &ip);
-    Pen ibr(Color(96, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()), 1.0f);
+    Pen ibr(Color(96, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()), 1.0f);
     g.DrawPath(&ibr, &ip);
 
     const REAL tx = inR.X + 9;
     const REAL tw = inR.Width - 18 - 26;        // 右边留出 × 的位置
 
-    // 光标位置：量出光标前那段的宽度
+    // 光标位置：量出光标前那段的宽度。
+    // GDI+ 默认排版会在左右各加一段内边距，量出的宽度比字形实际宽度大，
+    // 光标照这个宽度摆会整体偏右；这里量字和画字统一用 typographic 排版。
+    StringFormat tfmt(StringFormat::GenericTypographic());
+    tfmt.SetFormatFlags(tfmt.GetFormatFlags() | StringFormatFlagsNoWrap);
+    tfmt.SetLineAlignment(StringAlignmentCenter);
+    tfmt.SetAlignment(StringAlignmentNear);
+
     if (g_caret < 0) g_caret = 0;
     if (g_caret > (int)g_editText.size()) g_caret = (int)g_editText.size();
     RectF prefixBox;
     if (g_caret > 0) {
         wstring pre = g_editText.substr(0, (size_t)g_caret);
-        g.MeasureString(pre.c_str(), -1, bodyFont(), PointF(0, 0), &prefixBox);
+        g.MeasureString(pre.c_str(), -1, bodyFont(), PointF(0, 0), &tfmt, &prefixBox);
     }
     REAL caretOff = prefixBox.Width;
 
     if (g_editText.empty()) {
         drawText(g, L"任务标题，Enter 添加", bodyFont(),
-                 RectF(tx, inR.Y, tw, inR.Height), C_TEXT_FAINT, true, 0);
+                 RectF(tx, inR.Y, tw, inR.Height), pal().textFaint, true, 0);
         if (g_caretOn) {
-            SolidBrush cb(C_ACCENT);
+            SolidBrush cb(pal().accent);
             g.FillRectangle(&cb, tx, inR.Y + 7, 1.6f, inR.Height - 14);
         }
     } else {
         RectF meas;
-        g.MeasureString(g_editText.c_str(), -1, bodyFont(), PointF(0, 0), &meas);
+        g.MeasureString(g_editText.c_str(), -1, bodyFont(), PointF(0, 0), &tfmt, &meas);
 
         // 超长时跟着光标滚：光标跑到框外就把它拉回可见范围
         REAL scroll = 0;
@@ -434,15 +462,16 @@ static void paintEditPanel(Graphics& g) {
 
         GraphicsState st = g.Save();
         g.SetClip(inR, CombineModeIntersect);
-        drawText(g, g_editText, bodyFont(),
-                 RectF(tx - scroll, inR.Y, meas.Width + 4, inR.Height), C_TEXT, true, 0);
+        SolidBrush tb(pal().text);
+        g.DrawString(g_editText.c_str(), -1, bodyFont(),
+                     RectF(tx - scroll, inR.Y, meas.Width + 8, inR.Height), &tfmt, &tb);
         g.Restore(st);
 
         if (g_caretOn) {
             REAL caretX = tx + caretOff - scroll;
             if (caretX < tx) caretX = tx;
             if (caretX > tx + tw) caretX = tx + tw;
-            SolidBrush cb(C_ACCENT);
+            SolidBrush cb(pal().accent);
             g.FillRectangle(&cb, caretX, inR.Y + 7, 1.6f, inR.Height - 14);
         }
     }
@@ -455,10 +484,10 @@ static void paintEditPanel(Graphics& g) {
         if (g_hoverCancel) {
             GraphicsPath hp;
             roundRect(hp, cr, 6.0f);
-            SolidBrush hb(C_HOVER);
+            SolidBrush hb(pal().hover);
             g.FillPath(&hb, &hp);
         }
-        Pen xp(g_hoverCancel ? C_TEXT : C_TEXT_FAINT, 1.5f);
+        Pen xp(g_hoverCancel ? pal().text : pal().textFaint, 1.5f);
         xp.SetStartCap(LineCapRound);
         xp.SetEndCap(LineCapRound);
         REAL cxc = cr.X + cr.Width / 2, cyc = cr.Y + cr.Height / 2;
@@ -469,7 +498,7 @@ static void paintEditPanel(Graphics& g) {
     // 截止
     drawText(g, L"截止", smallFont(),
              RectF((REAL)SHADOW + 10, (REAL)SHADOW + panelDueTop(), 30, (REAL)CHIP_H),
-             C_TEXT_FAINT, true, 0);
+             pal().textFaint, true, 0);
     for (int i = 0; i < 5; ++i) {
         RectF r = chipRect(0, i, 5);
         r.X += SHADOW; r.Y += SHADOW;
@@ -488,7 +517,7 @@ static void paintEditPanel(Graphics& g) {
     // 关联材料：选文件 + 网址输入框（只收一条）
     drawText(g, L"从这里开始", smallFont(),
              RectF((REAL)SHADOW + 10, (REAL)SHADOW + panelLinkTop(), 62, (REAL)CHIP_H),
-             C_TEXT_FAINT, true, 0);
+             pal().textFaint, true, 0);
     {
         RectF pick = linkPickRect();
         pick.X += SHADOW; pick.Y += SHADOW;
@@ -498,11 +527,11 @@ static void paintEditPanel(Graphics& g) {
         ir.X += SHADOW; ir.Y += SHADOW;
         GraphicsPath ip;
         roundRect(ip, ir, 8.0f);
-        SolidBrush ib(Color(26, 255, 255, 255));
+        SolidBrush ib(ink(26));
         g.FillPath(&ib, &ip);
         Pen ibr(g_linkFocus
-                    ? Color(150, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB())
-                    : Color(36, 255, 255, 255), 1.0f);
+                    ? Color(150, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB())
+                    : ink(36), 1.0f);
         g.DrawPath(&ibr, &ip);
 
         const REAL tx = ir.X + 8;
@@ -514,9 +543,9 @@ static void paintEditPanel(Graphics& g) {
                     ? wstring(L"网址")
                     : (L"已添加 " + std::to_wstring(g_editLinks.size()) + L" 项");
                 drawText(g, hint, smallFont(),
-                         RectF(tx, ir.Y, tw, ir.Height), C_TEXT_FAINT, true, 0);
+                         RectF(tx, ir.Y, tw, ir.Height), pal().textFaint, true, 0);
             } else if (g_caretOn) {
-                SolidBrush cb(C_ACCENT);
+                SolidBrush cb(pal().accent);
                 g.FillRectangle(&cb, tx, ir.Y + 5, 1.4f, ir.Height - 10);
             }
         } else {
@@ -527,16 +556,16 @@ static void paintEditPanel(Graphics& g) {
             GraphicsState st = g.Save();
             g.SetClip(ir, CombineModeIntersect);
             drawText(g, g_editUrl, smallFont(),
-                     RectF(tx - scroll, ir.Y, meas.Width + 4, ir.Height), C_TEXT, true, 0);
+                     RectF(tx - scroll, ir.Y, meas.Width + 4, ir.Height), pal().text, true, 0);
             if (g_linkFocus && g_caretOn) {
-                SolidBrush cb(C_ACCENT);
+                SolidBrush cb(pal().accent);
                 g.FillRectangle(&cb, tx - scroll + meas.Width + 1, ir.Y + 5, 1.4f, ir.Height - 10);
             }
             g.Restore(st);
         }
 
         if (!g_editLinks.empty()) {
-            Pen xp(C_TEXT_FAINT, 1.4f);
+            Pen xp(pal().textFaint, 1.4f);
             xp.SetStartCap(LineCapRound);
             xp.SetEndCap(LineCapRound);
             REAL xx = SHADOW + 297, xy = SHADOW + panelLinkTop() + CHIP_H / 2.0f;
@@ -545,11 +574,11 @@ static void paintEditPanel(Graphics& g) {
         }
     }
 
-    // 预估。-1（没选）落在“不设”那一格，自定义落在“自定义”那一格
+    // 预估。-1 视为 1 小时，自定义落在“自定义”那一格
     drawText(g, L"预估", smallFont(),
              RectF((REAL)SHADOW + 10, (REAL)SHADOW + panelEstTop(), 30, (REAL)CHIP_H),
-             C_TEXT_FAINT, true, 0);
-    int onEst = (g_editEst < 0) ? (EST_CHIPS - 1)
+             pal().textFaint, true, 0);
+    int onEst = (g_editEst < 0) ? 1
               : (g_editEst == EST_CUSTOM ? EST_CUSTOM : g_editEst);
     for (int i = 0; i < EST_CHIPS; ++i) {
         RectF r = chipRect(1, i, EST_CHIPS);
@@ -583,6 +612,8 @@ static RectF calHourDec() { return RectF(56, 296, 22, 26); }
 static RectF calHourInc() { return RectF(116, 296, 22, 26); }
 static RectF calMinDec()  { return RectF(150, 296, 22, 26); }
 static RectF calMinInc()  { return RectF(210, 296, 22, 26); }
+static RectF calHourBox() { return RectF(80, 294, 34, 30); }   // 点数字可以直接输入
+static RectF calMinBox()  { return RectF(174, 294, 34, 30); }
 static RectF calCancel()  { return RectF(56, 352, 92, 32); }
 static RectF calOk()      { return RectF(172, 352, 92, 32); }
 
@@ -590,18 +621,18 @@ static void paintMini(Graphics& g, const RectF& r, const wchar_t* text, bool pri
     GraphicsPath p;
     roundRect(p, r, 8.0f);
     if (primary) {
-        SolidBrush b(Color(238, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()));
+        SolidBrush b(Color(238, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()));
         g.FillPath(&b, &p);
     } else {
-        SolidBrush b(Color(26, 255, 255, 255));
+        SolidBrush b(ink(26));
         g.FillPath(&b, &p);
     }
-    drawText(g, text, smallFont(), r, primary ? Color(255, 255, 255, 255) : C_TEXT_DIM, true, 1);
+    drawText(g, text, smallFont(), r, primary ? Color(255, 255, 255, 255) : pal().textDim, true, 1);
 }
 
 // 日历面板覆盖标题栏以下区域，用于选择日期和时间
 static void paintCalendar(Graphics& g) {
-    SolidBrush bg(Color(244, 16, 19, 25));
+    SolidBrush bg(pal().panel);
     g.FillRectangle(&bg, (REAL)SHADOW, (REAL)(SHADOW + TITLE_H),
                     (REAL)CARD_W, (REAL)(CARD_H - TITLE_H));
 
@@ -609,10 +640,10 @@ static void paintCalendar(Graphics& g) {
     swprintf(buf, 48, L"%d 年 %d 月", g_pickYear, g_pickMonth);
     drawText(g, buf, bodyFont(),
              RectF((REAL)SHADOW + 40, (REAL)SHADOW + 52, (REAL)CARD_W - 80, 26),
-             C_TEXT, true, 1);
+             pal().text, true, 1);
 
     {
-        Pen pen(C_TEXT_DIM, 1.6f);
+        Pen pen(pal().textDim, 1.6f);
         pen.SetStartCap(LineCapRound);
         pen.SetEndCap(LineCapRound);
         RectF l = calPrev(), r = calNext();
@@ -629,7 +660,7 @@ static void paintCalendar(Graphics& g) {
         for (int c = 0; c < 7; ++c) {
             drawText(g, wd[c], smallFont(),
                      RectF((REAL)SHADOW + 20 + c * 40, (REAL)SHADOW + 84, 40, 18),
-                     C_TEXT_FAINT, true, 1);
+                     pal().textFaint, true, 1);
         }
     }
 
@@ -645,19 +676,19 @@ static void paintCalendar(Graphics& g) {
             if (d == g_pickDay) {
                 GraphicsPath p;
                 roundRect(p, RectF(cell.X + 5, cell.Y + 2, cell.Width - 10, cell.Height - 4), 7.0f);
-                SolidBrush b(Color(215, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()));
+                SolidBrush b(Color(215, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()));
                 g.FillPath(&b, &p);
             }
             wchar_t db[8];
             swprintf(db, 8, L"%d", d);
             drawText(g, db, smallFont(), cell,
-                     d == g_pickDay ? Color(255, 255, 255, 255) : C_TEXT_DIM, true, 1);
+                     d == g_pickDay ? Color(255, 255, 255, 255) : pal().textDim, true, 1);
         }
     }
 
     {
         drawText(g, L"时间", smallFont(),
-                 RectF((REAL)SHADOW + 20, (REAL)SHADOW + 296, 34, 26), C_TEXT_FAINT, true, 0);
+                 RectF((REAL)SHADOW + 20, (REAL)SHADOW + 296, 34, 26), pal().textFaint, true, 0);
 
         RectF hd = calHourDec(), hi = calHourInc(), md = calMinDec(), mi = calMinInc();
         paintMini(g, RectF(SHADOW + hd.X, SHADOW + hd.Y, hd.Width, hd.Height), L"−", false);
@@ -665,15 +696,40 @@ static void paintCalendar(Graphics& g) {
         paintMini(g, RectF(SHADOW + md.X, SHADOW + md.Y, md.Width, md.Height), L"−", false);
         paintMini(g, RectF(SHADOW + mi.X, SHADOW + mi.Y, mi.Width, mi.Height), L"+", false);
 
-        wchar_t tb[8];
-        swprintf(tb, 8, L"%02d", g_pickHour);
-        drawText(g, tb, bodyFont(),
-                 RectF((REAL)SHADOW + 80, (REAL)SHADOW + 296, 34, 26), C_TEXT, true, 1);
         drawText(g, L":", bodyFont(),
-                 RectF((REAL)SHADOW + 140, (REAL)SHADOW + 296, 14, 26), C_TEXT_DIM, true, 1);
-        swprintf(tb, 8, L"%02d", g_pickMin);
-        drawText(g, tb, bodyFont(),
-                 RectF((REAL)SHADOW + 174, (REAL)SHADOW + 296, 34, 26), C_TEXT, true, 1);
+                 RectF((REAL)SHADOW + 140, (REAL)SHADOW + 296, 14, 26), pal().textDim, true, 1);
+
+        // 时、分两格都能点进去直接输入；输入时加框，光标跟在数字后面
+        int tvals[2] = { g_pickHour, g_pickMin };
+        RectF tboxes[2] = { calHourBox(), calMinBox() };
+        for (int i = 0; i < 2; ++i) {
+            RectF b = tboxes[i];
+            b.X += SHADOW;
+            b.Y += SHADOW;
+
+            if (g_timeEditCol == i) {
+                GraphicsPath p;
+                roundRect(p, b, 7.0f);
+                SolidBrush fill(ink(30));
+                g.FillPath(&fill, &p);
+                Pen pen(Color(96, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()), 1.0f);
+                g.DrawPath(&pen, &p);
+
+                drawText(g, g_timeEditText, bodyFont(), b, pal().text, true, 1);
+                if (g_caretOn) {
+                    RectF meas;
+                    if (!g_timeEditText.empty())
+                        g.MeasureString(g_timeEditText.c_str(), -1, bodyFont(), PointF(0, 0), &meas);
+                    SolidBrush cb(pal().accent);
+                    g.FillRectangle(&cb, b.X + b.Width / 2 + meas.Width / 2 + 1, b.Y + 8,
+                                    1.6f, b.Height - 16);
+                }
+            } else {
+                wchar_t tb[8];
+                swprintf(tb, 8, L"%02d", tvals[i]);
+                drawText(g, tb, bodyFont(), b, pal().text, true, 1);
+            }
+        }
     }
 
     {
@@ -712,6 +768,40 @@ static void commitEstEdit() {
     g_estEditText.clear();
 }
 
+// 分钟按 5 分钟跳：先加减，再落到最近的 5 的倍数上。
+// 例：43 点加号 → 48 → 50；50 点减号 → 45
+static int stepMinute5(int v, int delta) {
+    int next = v + delta;
+    int snapped = (int)(std::floor(next / 5.0 + 0.5)) * 5;
+    return ((snapped % 60) + 60) % 60;
+}
+
+// 日历里的时间格：点进去直接输入，打满两位或回车收下
+static void commitTimeEdit();
+
+static void beginTimeEdit(int col) {
+    // 从时切到分时先把已经敲了一半的时收下，否则那一位会丢
+    if (g_timeEditCol >= 0 && g_timeEditCol != col) commitTimeEdit();
+    g_timeEditCol = col;
+    g_timeEditText.clear();
+    g_caretOn = true;
+}
+
+static void commitTimeEdit() {
+    if (g_timeEditCol < 0) return;
+    if (!g_timeEditText.empty()) {
+        int v = _wtoi(g_timeEditText.c_str());
+        if (v < 0) v = 0;
+        if (g_timeEditCol == 0) {
+            g_pickHour = v > 23 ? 23 : v;
+        } else {
+            g_pickMin = v > 59 ? 59 : v;
+        }
+    }
+    g_timeEditCol = -1;
+    g_timeEditText.clear();
+}
+
 // 单击数字格时清空输入缓冲，新输入替换当前值
 static void beginEstEdit(int col) {
     g_estEditCol = col;
@@ -721,20 +811,20 @@ static void beginEstEdit(int col) {
 
 // 日历面板覆盖标题栏以下区域，布局空间大于控制台中的单行日期选择器
 static void paintEstPicker(Graphics& g) {
-    SolidBrush bg(Color(244, 16, 19, 25));
+    SolidBrush bg(pal().panel);
     g.FillRectangle(&bg, (REAL)SHADOW, (REAL)(SHADOW + TITLE_H),
                     (REAL)CARD_W, (REAL)(CARD_H - TITLE_H));
 
     drawText(g, L"自定义预估", bodyFont(),
              RectF((REAL)SHADOW + 20, (REAL)SHADOW + 52, (REAL)CARD_W - 40, 26),
-             C_TEXT, true, 1);
+             pal().text, true, 1);
 
     const wchar_t* caps[3] = { L"日", L"时", L"分" };
     int vals[3] = { g_estDay, g_estHour, g_estMinute };
     for (int i = 0; i < 3; ++i) {
         drawText(g, caps[i], smallFont(),
                  RectF((REAL)SHADOW + estColX(i), (REAL)SHADOW + 94, 76, 20),
-                 C_TEXT_FAINT, true, 1);
+                 pal().textFaint, true, 1);
 
         RectF m = estMinus(i), p = estPlus(i);
         paintMini(g, RectF(SHADOW + m.X, SHADOW + m.Y, m.Width, m.Height), L"−", false);
@@ -747,24 +837,24 @@ static void paintEstPicker(Graphics& g) {
             // 正在输入：加个框，光标跟在数字后面
             GraphicsPath p;
             roundRect(p, vb, 8.0f);
-            SolidBrush fill(Color(30, 255, 255, 255));
+            SolidBrush fill(ink(30));
             g.FillPath(&fill, &p);
-            Pen pen(Color(96, C_ACCENT.GetR(), C_ACCENT.GetG(), C_ACCENT.GetB()), 1.0f);
+            Pen pen(Color(96, pal().accent.GetR(), pal().accent.GetG(), pal().accent.GetB()), 1.0f);
             g.DrawPath(&pen, &p);
 
-            drawText(g, g_estEditText, bodyFont(), vb, C_TEXT, true, 1);
+            drawText(g, g_estEditText, bodyFont(), vb, pal().text, true, 1);
             if (g_caretOn) {
                 RectF meas;
                 if (!g_estEditText.empty())
                     g.MeasureString(g_estEditText.c_str(), -1, bodyFont(), PointF(0, 0), &meas);
                 REAL cx = vb.X + vb.Width / 2 + meas.Width / 2 + 1;
-                SolidBrush cb(C_ACCENT);
+                SolidBrush cb(pal().accent);
                 g.FillRectangle(&cb, cx, vb.Y + 9, 1.6f, vb.Height - 18);
             }
         } else {
             wchar_t nb[8];
             swprintf(nb, 8, L"%02d", vals[i]);
-            drawText(g, nb, bodyFont(), vb, C_TEXT, true, 1);
+            drawText(g, nb, bodyFont(), vb, pal().text, true, 1);
         }
     }
 
@@ -772,7 +862,7 @@ static void paintEstPicker(Graphics& g) {
     wstring tip = total > 0 ? (L"合计 " + shortDuration(total)) : wstring(L"未设置时长");
     drawText(g, tip, smallFont(),
              RectF((REAL)SHADOW + 20, (REAL)SHADOW + 248, (REAL)CARD_W - 40, 24),
-             C_TEXT_DIM, true, 1);
+             pal().textDim, true, 1);
 
     RectF c = estCancel(), o = estOk();
     paintMini(g, RectF(SHADOW + c.X, SHADOW + c.Y, c.Width, c.Height), L"取消", false);
@@ -842,7 +932,7 @@ static void capsuleProgress(Graphics& g, const RectF& r, REAL t, Pen& pen) {
 // 平时就是这三个纯色，只在跨过 60% / 80% 那两个点时放一段过渡动画，
 // 不是跟着进度一直渐变。
 static Color tierColor(int tier) {
-    return (tier == 0) ? C_GREEN : (tier == 1 ? C_AMBER : C_RED);
+    return (tier == 0) ? pal().green : (tier == 1 ? pal().amber : pal().red);
 }
 
 static Color lerpColor(Color a, Color b, REAL k) {
@@ -857,7 +947,7 @@ struct TierState { wchar_t id[40] = {0}; int tier = 0; int from = 0; DWORD at = 
 static TierState g_tiers[12];
 
 static Color progressColorOf(const Task& t, REAL ratio) {
-    int tier = (ratio <= 0.6f) ? 0 : (ratio <= 0.8f ? 1 : 2);
+    int tier = (ratio <= 0.35f) ? 0 : (ratio <= 0.7f ? 1 : 2);
 
     TierState* slot = nullptr;
     for (auto& st : g_tiers) {
@@ -960,7 +1050,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     RectF rowR((REAL)SHADOW + 6 + dx, rowY, (REAL)CARD_W - 12, (REAL)ROW_H);
 
     Urgency u = checked ? URG_NONE : urgencyOf(t);
-    Color uc = (u == URG_RED) ? C_RED : C_AMBER;
+    Color uc = (u == URG_RED) ? pal().red : pal().amber;
 
     // 进行中：进度色铺在最底层，文字、勾选框、暖色竖条、按钮都压在它上面
 
@@ -995,7 +1085,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     } else if (rowIdx >= 0 && g_hoverRow == rowIdx && !g_dragging) {
         GraphicsPath hp;
         roundRect(hp, rowR, 10.0f);
-        SolidBrush hb(fadeCol(C_HOVER, alpha));
+        SolidBrush hb(fadeCol(pal().hover, alpha));
         g.FillPath(&hb, &hp);
     }
 
@@ -1013,8 +1103,10 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     } else {
         GraphicsPath p;
         roundRect(p, cb, 5.5f);
+        // 未勾选的框：夜间用白色描边，日间换成深色，否则浅底上几乎看不见
+        Color idle = pal().checkboxIdle;
         Pen border(u != URG_NONE ? fadeCol(Color(150, uc.GetR(), uc.GetG(), uc.GetB()), alpha)
-                                 : fadeCol(Color(70, 255, 255, 255), alpha), 1.5f);
+                                 : fadeCol(idle, alpha), 1.5f);
         g.DrawPath(&border, &p);
     }
 
@@ -1023,7 +1115,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     REAL titleW = rowR.Width - 38 - 10 - 30 - 26;   // 右边留给“置顶”“正在进行”
 
     // 包含关联材料的任务以强调色显示标题，标识可打开关联内容
-    Color titleCol = checked ? C_TEXT_FAINT : (t.links.empty() ? C_TEXT : C_ACCENT);
+    Color titleCol = checked ? pal().textFaint : (t.links.empty() ? pal().text : pal().accent);
     drawText(g, t.title, bodyFont(), RectF(titleX, rowY + 7, titleW, 21),
              fadeCol(titleCol, alpha), true, 0);
 
@@ -1031,7 +1123,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
         RectF meas;
         g.MeasureString(t.title.c_str(), -1, bodyFont(), PointF(0, 0), &meas);
         REAL lineW = (meas.Width < titleW - 4) ? meas.Width : titleW - 8;
-        Pen strike(fadeCol(C_TEXT_FAINT, alpha), 1.0f);
+        Pen strike(fadeCol(pal().textFaint, alpha), 1.0f);
         g.DrawLine(&strike, titleX, rowY + 17.5f, titleX + lineW, rowY + 17.5f);
     }
 
@@ -1045,7 +1137,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
         // 左侧按钮为置顶开关；置顶任务始终显示该按钮，其余任务仅在悬停时显示
         REAL qcx = rowR.X + rowR.Width - 45;
         if (t.pinned || (rowIdx >= 0 && g_hoverRow == rowIdx && !g_dragging)) {
-            Color bc = t.pinned ? C_ACCENT : C_TEXT_FAINT;
+            Color bc = t.pinned ? pal().accent : pal().textFaint;
             if (t.pinned) {
                 SolidBrush bg(fadeCol(Color(56, bc.GetR(), bc.GetG(), bc.GetB()), alpha));
                 g.FillEllipse(&bg, qcx - pr, pcy - pr, pr * 2, pr * 2);
@@ -1090,8 +1182,14 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
         meta += hasEstimate(t) ? (L"已进行 " + clockText(nowMs() - st)) : wstring(L"正在进行");
     }
     if (!meta.empty()) {
-        Color mc = (u == URG_NONE) ? C_TEXT_FAINT
-                 : (u == URG_RED ? Color(255, 255, 150, 170) : Color(255, 250, 205, 146));
+        // 紧急态的那行小字：夜间用浅色（深底上才看得见），日间必须换成深色，
+        // 否则浅黄压在同样浅黄的暖色行底上等于没写
+        Color mc;
+        if (u == URG_NONE) {
+            mc = pal().textFaint;
+        } else {
+            mc = (u == URG_RED) ? pal().metaRed : pal().metaAmber;
+        }
         // 进行中任务整行使用进度色填充；为辅助文字添加白色描边以提升可读性
         Color edge(t.startedAt > 0 ? (BYTE)(80 * alpha) : (BYTE)0, 255, 255, 255);
         drawText(g, meta, smallFont(), RectF(titleX, rowY + 29, titleW, 16),
@@ -1123,7 +1221,9 @@ static void paint(HDC dc) {
                 card.Width + grow * 2, card.Height + grow * 2);
         GraphicsPath p;
         roundRect(p, r, RADIUS + grow);
-        SolidBrush b(Color((BYTE)alpha, 0, 0, 0));
+        // 日间：纯黑投影在亮底上是一圈灰雾，换成淡蓝、透明度砍半
+        SolidBrush b(Color((BYTE)(alpha * pal().cardShadowK), pal().cardShadow.GetR(),
+                           pal().cardShadow.GetG(), pal().cardShadow.GetB()));
         g.FillPath(&b, &p);
     }
 
@@ -1132,26 +1232,21 @@ static void paint(HDC dc) {
         GraphicsPath p;
         roundRect(p, fillR, RADIUS);
 
-        // 毛玻璃：抓屏模糊图 + 半透明深色罩，只靠半透明出不来磨砂感。
-        // 位图使用设备像素；绘制坐标已按 g_scale 缩放，尺寸需除以 g_scale 以匹配 1:1 像素比例
-        if (g_bgReady && g_bgBits) {
-            Bitmap glass(g_surfW, g_surfH, g_surfW * 4, PixelFormat32bppARGB, g_bgBits);
-            g.SetClip(&p);
-            g.DrawImage(&glass, (REAL)0, (REAL)0,
-                        (REAL)g_surfW / g_scale, (REAL)g_surfH / g_scale);
-            g.ResetClip();
-            SolidBrush tint(C_GLASS);
-            g.FillPath(&tint, &p);
-        } else {
-            SolidBrush bg(C_CARD);
-            g.FillPath(&bg, &p);
-        }
+        SolidBrush base(pal().card);
+        g.FillPath(&base, &p);
+
+        // 一层很淡的紫渐变，左上偏冷、右下偏紫。夜间重一点，日间只要一丝
+        LinearGradientBrush wash(
+            PointF(fillR.X, fillR.Y),
+            PointF(fillR.X + fillR.Width, fillR.Y + fillR.Height),
+            pal().washA, pal().washB);
+        g.FillPath(&wash, &p);
 
         // 描边内缩半像素，否则一半笔画落在面板外。
         GraphicsPath bp;
         roundRect(bp, RectF(card.X + 0.5f, card.Y + 0.5f,
                             card.Width - 1.0f, card.Height - 1.0f), RADIUS - 0.5f);
-        Pen border(C_BORDER, 1.0f);
+        Pen border(pal().border, 1.0f);
         g.DrawPath(&border, &bp);
     }
 
@@ -1171,12 +1266,12 @@ static void paint(HDC dc) {
         drawMark(g, iconR.X + iconR.Width / 2, iconR.Y + iconR.Height / 2, 17.0f, &white);
 
         drawText(g, L"待办", titleFont(),
-                 RectF((REAL)(SHADOW + 42), (REAL)(SHADOW + 12), 70, 22), C_TEXT, true, 0);
+                 RectF((REAL)(SHADOW + 42), (REAL)(SHADOW + 12), 70, 22), pal().text, true, 0);
 
         wchar_t cnt[16];
         swprintf(cnt, 16, L"%d", g_pending);
         drawText(g, cnt, smallFont(),
-                 RectF((REAL)(SHADOW + 76), (REAL)(SHADOW + 13), 40, 20), C_TEXT_FAINT, true, 0);
+                 RectF((REAL)(SHADOW + 76), (REAL)(SHADOW + 13), 40, 20), pal().textFaint, true, 0);
 
         {
             REAL bx = (REAL)(SHADOW + CARD_W - 34);
@@ -1184,10 +1279,10 @@ static void paint(HDC dc) {
             if (g_hoverBtn == 1) {
                 GraphicsPath hp;
                 roundRect(hp, br, 7.0f);
-                SolidBrush hb(C_HOVER);
+                SolidBrush hb(pal().hover);
                 g.FillPath(&hb, &hp);
             }
-            Pen pen(C_TEXT_FAINT, 1.5f);
+            Pen pen(pal().textFaint, 1.5f);
             pen.SetStartCap(LineCapRound);
             pen.SetEndCap(LineCapRound);
             g.DrawLine(&pen, br.X + 7, br.Y + 7, br.X + 15, br.Y + 15);
@@ -1200,16 +1295,16 @@ static void paint(HDC dc) {
             if (g_hoverBtn == 4) {
                 GraphicsPath hp;
                 roundRect(hp, br, 7.0f);
-                SolidBrush hb(C_HOVER);
+                SolidBrush hb(pal().hover);
                 g.FillPath(&hb, &hp);
             }
             paintPin(g, br.X + 11.0f, br.Y + 12.3f, 1.15f,
-                     g_topmost ? C_ACCENT : C_TEXT_FAINT);
+                     g_topmost ? pal().accent : pal().textFaint);
         }
     }
 
     {
-        Pen sep(Color(18, 255, 255, 255), 1.0f);
+        Pen sep(ink(18), 1.0f);
         g.DrawLine(&sep, SHADOW + 14.0f, SHADOW + (REAL)TITLE_H - 0.5f,
                    SHADOW + CARD_W - 14.0f, SHADOW + (REAL)TITLE_H - 0.5f);
     }
@@ -1232,20 +1327,20 @@ static void paint(HDC dc) {
     if (!g_loaded) {
         drawText(g, L"正在连接后台", smallFont(),
                  RectF((REAL)SHADOW, (REAL)(SHADOW + LIST_TOP), (REAL)CARD_W, (REAL)ROW_H),
-                 C_TEXT_FAINT, true, 1);
+                 pal().textFaint, true, 1);
     } else if (g_loadError) {
         // 和空列表分开：数据损坏时要引导用户去恢复备份，不能显示成空态
         REAL midY = (REAL)(SHADOW + LIST_TOP + (LIST_BOTTOM - LIST_TOP) / 2 - 30);
         drawText(g, L"无法读取任务数据", bodyFont(),
-                 RectF((REAL)SHADOW, midY, (REAL)CARD_W, 26), C_RED, true, 1);
+                 RectF((REAL)SHADOW, midY, (REAL)CARD_W, 26), pal().red, true, 1);
         drawText(g, L"可在控制台中从历史备份恢复", smallFont(),
-                 RectF((REAL)SHADOW, midY + 26, (REAL)CARD_W, 22), C_TEXT_FAINT, true, 1);
+                 RectF((REAL)SHADOW, midY + 26, (REAL)CARD_W, 22), pal().textFaint, true, 1);
     } else if (g_tasks.empty()) {
         REAL midY = (REAL)(SHADOW + LIST_TOP + (LIST_BOTTOM - LIST_TOP) / 2 - 30);
         drawText(g, L"暂无待办任务", bodyFont(),
-                 RectF((REAL)SHADOW, midY, (REAL)CARD_W, 26), C_TEXT_DIM, true, 1);
+                 RectF((REAL)SHADOW, midY, (REAL)CARD_W, 26), pal().textDim, true, 1);
         drawText(g, L"点击下方“添加任务”新建", smallFont(),
-                 RectF((REAL)SHADOW, midY + 26, (REAL)CARD_W, 22), C_TEXT_FAINT, true, 1);
+                 RectF((REAL)SHADOW, midY + 26, (REAL)CARD_W, 22), pal().textFaint, true, 1);
     }
 
     // 任务行随列表滚动，超出可视区域时裁切；编辑状态下列表绘制区域止于面板上沿
@@ -1305,7 +1400,7 @@ static void paint(HDC dc) {
         paintEditPanel(g);
     } else {
         REAL footY = (REAL)(SHADOW + CARD_H - FOOT_H);
-        Pen sep(Color(18, 255, 255, 255), 1.0f);
+        Pen sep(ink(18), 1.0f);
         g.DrawLine(&sep, SHADOW + 14.0f, footY + 0.5f, SHADOW + CARD_W - 14.0f, footY + 0.5f);
 
         RectF addR((REAL)SHADOW + 6, footY + 6, (REAL)CARD_W / 2 - 8, (REAL)FOOT_H - 14);
@@ -1315,17 +1410,17 @@ static void paint(HDC dc) {
         if (g_hoverBtn == 2) {
             GraphicsPath hp;
             roundRect(hp, addR, 9.0f);
-            SolidBrush hb(C_HOVER);
+            SolidBrush hb(pal().hover);
             g.FillPath(&hb, &hp);
         }
         if (g_hoverBtn == 3) {
             GraphicsPath hp;
             roundRect(hp, openR, 9.0f);
-            SolidBrush hb(C_HOVER);
+            SolidBrush hb(pal().hover);
             g.FillPath(&hb, &hp);
         }
 
-        Pen plus(C_ACCENT, 1.6f);
+        Pen plus(pal().accent, 1.6f);
         plus.SetStartCap(LineCapRound);
         plus.SetEndCap(LineCapRound);
         REAL px = addR.X + 14, py = addR.Y + addR.Height / 2;
@@ -1333,10 +1428,10 @@ static void paint(HDC dc) {
         g.DrawLine(&plus, px - 5, py, px + 5, py);
 
         drawText(g, L"添加任务", bodyFont(),
-                 RectF(addR.X + 26, addR.Y, addR.Width - 26, addR.Height), C_TEXT_DIM, true, 0);
+                 RectF(addR.X + 26, addR.Y, addR.Width - 26, addR.Height), pal().textDim, true, 0);
 
         drawText(g, L"打开控制台", smallFont(),
-                 RectF(openR.X, openR.Y, openR.Width - 10, openR.Height), C_TEXT_FAINT, true, 2);
+                 RectF(openR.X, openR.Y, openR.Width - 10, openR.Height), pal().textFaint, true, 2);
     }
 }
 

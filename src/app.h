@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#include <string>
 
 #include "resource.h"
 
@@ -88,5 +89,16 @@ void appNotify(const wchar_t* text);
 
 // 退出整个程序（含后台线程）
 void appQuit();
+
+// ---- 主题 ----
+
+// 主题模式：0 日间、1 夜间、2 跟随系统。控制台那个三档开关改的就是它
+int  appThemeMode();
+void appSetThemeMode(int mode);
+void widgetNotifyTheme(int mode);
+
+// 打开本地路径：文件夹直接进去，文件在所在目录里选中。
+// 打开前放开前台权限，否则资源管理器可能开在别的窗口后面，看着像没反应。
+bool appOpenLocalPath(const std::wstring& path);
 
 #endif // GOGOSPOT_APP_H

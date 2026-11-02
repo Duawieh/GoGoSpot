@@ -115,6 +115,91 @@ static bool dropOrphanRepeat(JVal& root) {
     return changed;
 }
 
+// 写字符串字段：不存在就新建，存在就覆盖
+static void setStrField(JVal& t, const char* key, const string& val) {
+    for (auto& kv : t.obj) {
+        if (kv.first == key) {
+            kv.second.kind = JVal::Str;
+            kv.second.str = val;
+            return;
+        }
+    }
+    JVal v;
+    v.kind = JVal::Str;
+    v.str = val;
+    t.obj.emplace_back(key, std::move(v));
+}
+
+// 控制台保存的是整份数据，这里要区分「改期」和「临时推迟」：
+// 改期 = 重新锚定，锚点跟着 due 走；推迟只改 due，锚点不动（下一期还按老节奏生成）。
+// 判断依据是与磁盘上同 id 的旧 due 比：变了就是改期，新任务则以当前 due 作为锚点；
+// 旧 due 没变时连缺失的锚点也不补，避免一次无关的保存把推迟过的节奏改掉。
+// 没有 repeat 的任务不需要锚点，残留的清掉。
+static bool reanchorRepeats(JVal& root) {
+    JVal old;
+    bool haveOld = false;
+    {
+        string raw;
+        if (readFileAll(gDataFile, raw) && !raw.empty()) {
+            JParser op(raw);
+            haveOld = op.parse(old) && old.get("tasks") != nullptr;
+        }
+    }
+
+    // 找到同 id 的旧任务时返回 true，并通过 out 带出旧 due（可能为空）
+    auto oldDueOf = [&](const string& id, string& out) -> bool {
+        out.clear();
+        if (!haveOld) return false;
+        JVal* arr = old.get("tasks");
+        if (!arr || arr->kind != JVal::Arr) return false;
+        for (auto& t : arr->arr) {
+            if (t.kind != JVal::Obj) continue;
+            JVal* tid = t.get("id");
+            if (!tid || tid->kind != JVal::Str || tid->str != id) continue;
+            JVal* d = t.get("due");
+            if (d && d->kind == JVal::Str) out = d->str;
+            return true;
+        }
+        return false;
+    };
+
+    JVal* tasks = root.get("tasks");
+    if (!tasks || tasks->kind != JVal::Arr) return false;
+
+    bool changed = false;
+    for (auto& t : tasks->arr) {
+        if (t.kind != JVal::Obj) continue;
+
+        JVal* rep = t.get("repeat");
+        bool repeating = rep && rep->kind == JVal::Str && !rep->str.empty();
+        JVal* rod = t.get("route_origin_date");
+        string due = dueOf(t);
+
+        if (!repeating || due.empty()) {
+            if (rod && rod->kind == JVal::Str && !rod->str.empty()) {
+                rod->str.clear();
+                changed = true;
+            }
+            continue;
+        }
+
+        JVal* tid = t.get("id");
+        string id = (tid && tid->kind == JVal::Str) ? tid->str : string();
+
+        string prevDue;
+        bool found = oldDueOf(id, prevDue);
+        bool needAnchor = !found || due != prevDue;
+
+        // 新任务、或者截止时间变了，才把锚点重新定到 due；
+        // 只改标题/预估这类保存不动锚点。
+        if (needAnchor && (!rod || rod->kind != JVal::Str || rod->str != due)) {
+            setStrField(t, "route_origin_date", due);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 static Response apiTasks(const string& method, const string& body) {
     std::lock_guard<std::mutex> lk(gDataMutex);
 
@@ -138,13 +223,18 @@ static Response apiTasks(const string& method, const string& body) {
             return jsonError(400, "tasks 必须是对象数组");
         }
 
-        // 仅需修正“重复但无截止时间”一种情况，修改后重新序列化并写入
+        // 重复任务的锚点要跟着改期走，没有截止时间的 repeat 要清掉，
+        // 任一发生修改就重新序列化后写入
         string payload = body;
         JVal root;
         JParser p(body);
-        if (p.parse(root) && dropOrphanRepeat(root)) {
-            payload.clear();
-            jsonWrite(root, payload);
+        if (p.parse(root)) {
+            bool changed = reanchorRepeats(root);
+            if (dropOrphanRepeat(root)) changed = true;
+            if (changed) {
+                payload.clear();
+                jsonWrite(root, payload);
+            }
         }
 
         ensureDir(gDataDir);
@@ -293,14 +383,15 @@ static Response apiOpen(const string& rawUrl, const string& call) {
 
     // 本地路径在资源管理器中定位；关联材料操作不调用默认文件关联程序。
     bool reveal = (call == "explorer") || (call.empty() && !isWebUrl(url));
-    HINSTANCE h;
+    bool ok;
     if (reveal) {
-        wstring arg = L"/select,\"" + w + L"\"";
-        h = ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+        ok = appOpenLocalPath(w);      // 文件夹直接进去，文件在父目录里选中
     } else {
-        h = ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        AllowSetForegroundWindow(ASFW_ANY);   // 浏览器同样别开在后面
+        HINSTANCE h = ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        ok = (INT_PTR)h > 32;
     }
-    if ((INT_PTR)h <= 32) return jsonError(500, "cannot open");
+    if (!ok) return jsonError(500, "cannot open");
     return jsonOk("\"opened\":true");
 }
 

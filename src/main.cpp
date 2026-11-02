@@ -10,6 +10,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <string>
+#include <thread>
 
 #include "app.h"
 
@@ -132,6 +134,108 @@ static LRESULT CALLBACK TrayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         default:
             return DefWindowProcW(h, m, w, l);
     }
+}
+
+// 把窗口提到前台。后台进程直接调 SetForegroundWindow 会被系统拦下（只闪任务栏），
+// 标准做法是把自己的输入队列挂到当前前台线程上，借它的权限切过去。
+static void bringToFront(HWND hwnd) {
+    if (!hwnd) return;
+    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+
+    // AttachThreadInput 要求双方都有消息队列；本线程是临时起的，先建一个
+    MSG msg;
+    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+
+    HWND fg = GetForegroundWindow();
+    DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    DWORD myThread = GetCurrentThreadId();
+    bool attached = false;
+
+    if (fgThread && fgThread != myThread) attached = AttachThreadInput(myThread, fgThread, TRUE) != FALSE;
+
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+
+    if (attached) AttachThreadInput(myThread, fgThread, FALSE);
+    if (GetForegroundWindow() == hwnd) return;
+
+    // 兜底：这个 API 虽标记为过时，正是为跨进程切前台保留的
+    typedef void (WINAPI *SwitchFn)(HWND, BOOL);
+    static SwitchFn sw = reinterpret_cast<SwitchFn>(reinterpret_cast<void*>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SwitchToThisWindow")));
+    if (sw) sw(hwnd, TRUE);
+}
+
+struct FocusCtx {
+    const std::wstring* leaf;
+    HWND hit;
+};
+
+// 标题里带目录名、且可见的资源管理器窗口。多标签窗口的标题形如
+// “目录名 和 1 个其他选项卡 - 文件资源管理器”，用子串匹配即可。
+static BOOL CALLBACK focusEnumProc(HWND h, LPARAM lp) {
+    FocusCtx* c = reinterpret_cast<FocusCtx*>(lp);
+
+    wchar_t cls[64] = {0};
+    GetClassNameW(h, cls, 64);
+    if (wcscmp(cls, L"CabinetWClass") != 0) return TRUE;
+    if (!IsWindowVisible(h)) return TRUE;
+
+    wchar_t title[512] = {0};
+    GetWindowTextW(h, title, 512);
+    if (wcsstr(title, c->leaf->c_str())) {
+        c->hit = h;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// 资源管理器不一定会自己浮上来：轮询找它的窗口再切前台。
+// 单独线程做，调用方（HTTP 请求线程 / 悬浮清单）不用等。
+static void focusExplorerWindow(std::wstring leaf) {
+    for (int i = 0; i < 12; ++i) {
+        Sleep(120);
+        FocusCtx ctx{ &leaf, nullptr };
+        EnumWindows(focusEnumProc, reinterpret_cast<LPARAM>(&ctx));
+        if (ctx.hit) {
+            bringToFront(ctx.hit);
+            return;
+        }
+    }
+}
+
+// 打开本地路径。文件夹直接进去；文件在父目录里选中。
+bool appOpenLocalPath(const std::wstring& path) {
+    if (path.empty()) return false;
+
+    AllowSetForegroundWindow(ASFW_ANY);
+
+    DWORD attr = GetFileAttributesW(path.c_str());
+    bool isDir = (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY));
+
+    // 文件用 explorer.exe /select 而不是 SHOpenFolderAndSelectItems：
+    // 实测后者是同步 COM 调用，每次都要 700–800ms；前者在资源管理器已开的情况下
+    // 只要约 80ms（窗口出现），只有冷启动才会到 1.1 秒
+    bool ok = false;
+    if (isDir) {
+        HINSTANCE h = ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        ok = (INT_PTR)h > 32;
+    } else {
+        std::wstring arg = L"/select,\"" + path + L"\"";
+        HINSTANCE h = ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(),
+                                    nullptr, SW_SHOWNORMAL);
+        ok = (INT_PTR)h > 32;
+    }
+    if (!ok) return false;
+
+    // 窗口标题用的是目录名：文件夹取自己，文件取所在目录
+    std::wstring dir = isDir ? path : path.substr(0, path.find_last_of(L"\\/"));
+    size_t slash = dir.find_last_of(L"\\/");
+    std::wstring leaf = (slash == std::wstring::npos) ? dir : dir.substr(slash + 1);
+    if (!leaf.empty()) std::thread(focusExplorerWindow, leaf).detach();
+
+    return true;
 }
 
 void appQuit() {

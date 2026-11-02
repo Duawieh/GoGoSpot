@@ -22,7 +22,6 @@ static bool  g_loadError = false;   // 后台在，但任务文件读不出来�
 static bool  g_expanded = false;     // 收起（只显示圆点）/ 展开（显示任务）
 static bool  g_widgetOn = true;      // 悬浮清单总开关，关闭时隐藏整个窗口
 static float g_fade = 0.0f;          // 展开时的淡入进度 0..1
-static bool  g_bgReady = false;      // 模糊背景是否已抓取
 
 static wstring g_justDone;          // 刚勾选的任务，短暂显示删除线
 static int   g_hoverRow = -1;
@@ -35,11 +34,6 @@ static HDC     g_screenDC = nullptr;
 static HWND    g_hwnd = nullptr;
 static HWND    g_desktopParent = nullptr;   // 挂到桌面后指向 Progman
 
-static HDC   g_bgDC = nullptr;       // 模糊后的背景
-static HDC   g_rawDC = nullptr;      // 原始抓屏
-static HDC   g_smallDC = nullptr;    // 缩小用于模糊
-static BYTE* g_bgBits = nullptr;
-static HBITMAP g_bgBmp = nullptr, g_rawBmp = nullptr, g_smallBmp = nullptr;
 
 static POINT g_dragOrigin{};
 static POINT g_winOrigin{};
@@ -113,6 +107,7 @@ static bool    g_caretOn  = false;
 // 日/夜配色：跟 Windows 的“应用模式”走。
 // 日间用浅底 + 暖色渐变，夜间用纯灰块 + 外发光。
 static bool    g_dayMode  = false;
+static int     g_themeMode = 2;      // 0 日间、1 夜间、2 跟随系统
 
 // 置顶模式使窗口保持在普通窗口上方。owned 窗口不支持 topmost，因此需移除 owner 关联。
 static bool    g_topmost  = false;
@@ -129,15 +124,20 @@ static bool    g_pressPending = false;
 static POINT   g_pressPt{};
 static POINT   g_pressWin{};
 
-// 就地添加时选的截止 / 预估。due：0 今天 1 明天 2 后天 3 自选 4 不设；est -1 = 不设
+// 就地添加时选的截止 / 预估。due：0 今天 1 明天 2 后天 3 自选 4 不设；est 默认 1（1 小时）
 static int     g_editDue = 4;
-static int     g_editEst = -1;
+static int     g_editEst = 1;
 static bool    g_hoverCancel = false;
 
 // 自选日期：日历面板的状态
 static bool    g_pickingDate = false;
 static int     g_pickYear = 0, g_pickMonth = 0, g_pickDay = 0;
 static int     g_pickHour = 23, g_pickMin = 59;
+static bool    g_refreshPending = false;  // 已经排了一次交互后刷新，避免重复投递
+static bool    g_hoverIn = false;         // 鼠标是否已经在悬浮清单上
+static bool    g_fsPrev = false;          // 上一次看到的「前台是全屏程序」状态
+static int     g_timeEditCol = -1;        // 日历里正在输入的时间格：0 时 1 分
+static wstring g_timeEditText;            // 输入中的数字
 static wstring g_customDue;              // "YYYY-MM-DDTHH:mm"
 
 // 自定义预估：弹层里正在编辑的 日 / 时 / 分
@@ -160,7 +160,7 @@ static bool    g_menuOpen = false;
 struct EditDraft {
     bool valid = false;
     wstring title, customDue, url;
-    int due = 4, est = -1;
+    int due = 4, est = 1;
     int caret = 0;
     std::vector<wstring> links;
 };
@@ -174,10 +174,10 @@ static bool    g_progAll = false;   // 为真时所有进度条都吃出现动�
 static REAL    g_dotRingA  = 0.0f;    // 圆点外那圈环的透明度
 static bool    g_dotRingOn = false;   // 上一次算出来的目标状态，用来抓“刚重新出现”
 
-// 预估时长：三档常用的 + 自定义 + 不设。自定义走弹层，能填 日/时/分
+// 预估时长：三档常用的 + 自定义。新建任务默认 1 小时，不再提供「不设」
 static const int    EST_MIN[3] = { 30, 60, 120 };
-static const wchar_t* EST_LABEL[5] = { L"30分", L"1时", L"2时", L"自定义", L"不设" };
-static const int    EST_CHIPS = 5;
+static const wchar_t* EST_LABEL[4] = { L"30分", L"1时", L"2时", L"自定义" };
+static const int    EST_CHIPS = 4;
 static const int    EST_CUSTOM = 3;          // “自定义”那一格的下标
 static const wchar_t* DUE_LABEL[5] = { L"今天", L"明天", L"后天", L"自定义", L"不设" };
 

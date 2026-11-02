@@ -141,17 +141,17 @@ static void pasteTitle() {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
-// 网址交给默认浏览器；本地路径不按关联程序打开，直接在资源管理器里选中。
+// 网址交给默认浏览器；本地路径不按关联程序打开，文件夹直接进去、文件在父目录里选中。
 // “开始工作”操作应在资源管理器中定位本地材料，而非通过关联程序打开文档。
 static void openLinks(const std::vector<wstring>& links) {
     for (const wstring& one : links) {
         if (one.empty()) continue;
         bool web = one.rfind(L"http://", 0) == 0 || one.rfind(L"https://", 0) == 0;
         if (web) {
+            AllowSetForegroundWindow(ASFW_ANY);   // 否则浏览器窗口可能开在后面
             ShellExecuteW(nullptr, L"open", one.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         } else {
-            wstring arg = L"/select,\"" + one + L"\"";
-            ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+            appOpenLocalPath(one);
         }
     }
 }
@@ -162,7 +162,7 @@ static void startEdit() {
     g_editText.clear();
     g_caret = 0;
     g_editDue = 4;                           // 默认不设截止
-    g_editEst = -1;                          // 默认不设预估
+    g_editEst = 1;                           // 默认 1 小时，不再提供「不设」
     g_customDue.clear();
     g_pickingDate = false;
     g_pickingEst = false;
@@ -225,7 +225,7 @@ static void restoreEdit() {
     g_customDue = g_draft.customDue;
     g_editUrl = g_draft.url;
     g_editDue = g_draft.due;
-    g_editEst = g_draft.est;
+    g_editEst = (g_draft.est >= 0 && g_draft.est < EST_CHIPS) ? g_draft.est : 1;
     g_caret = g_draft.caret;
     g_editLinks = g_draft.links;
 }
@@ -267,10 +267,11 @@ static void finishEdit(bool commit, bool keepDraft) {
                 }
                 path += L"&links=" + lk;
             }
-            int estMin = 0;
+            int estMin = 60;                     // 没选过也按 1 小时，不再允许空预估
             if (g_editEst >= 0 && g_editEst < EST_CUSTOM) estMin = EST_MIN[g_editEst];
             else if (g_editEst == EST_CUSTOM)             estMin = g_editEstCustom;
-            if (estMin > 0) path += L"&estimate=" + std::to_wstring(estMin);
+            if (estMin <= 0) estMin = 60;
+            path += L"&estimate=" + std::to_wstring(estMin);
             string body;
             httpRequest(L"POST", path, body);
 
@@ -482,6 +483,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             if (w == TIMER_TRAY) {
                 if (!g_trayOpen) { KillTimer(h, TIMER_TRAY); return 0; }
+                // 右键菜单开着时不计空闲：光标移到菜单上，人还在用，不能把清单收起来。
+                // 顺手把空闲时刻往后推，关掉菜单后还能再留两秒。
+                if (g_menuOpen) { g_trayIdle = GetTickCount(); return 0; }
                 if (GetTickCount() - g_trayIdle >= 2000) endTraySession();
                 return 0;
             }
@@ -504,7 +508,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 GetCursorPos(&pt);
                 RECT wr{};
                 GetWindowRect(h, &wr);
-                if (!PtInRect(&wr, pt) && !g_editing) collapseWidget();
+                if (!PtInRect(&wr, pt) && !g_editing && !g_menuOpen) collapseWidget();
                 return 0;
             }
             if (w == TIMER_SETTLE) {
@@ -512,9 +516,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_justDone.clear();
                 refreshAsync();
             } else if (w == TIMER_REFRESH && !g_dragging) {
+                // 跟随系统时，系统切了深浅要跟着换
+                if (g_themeMode == 2 && themeModeIsLight(2) != g_dayMode) {
+                    setDayMode(themeModeIsLight(2));
+                    present();
+                }
                 // 收起状态仍需刷新任务数据，以更新圆点右侧的窄条
                 refreshAsync();
                 // 在控制台启动的任务也需在悬浮清单中启动呼吸动画
+                if (needBreath() && !g_progOn) kickProg(h);
+            }
+            return 0;
+
+        case WM_APP_REFRESH:
+            g_refreshPending = false;
+            if (!g_dragging) {
+                refreshAsync();
                 if (needBreath() && !g_progOn) kickProg(h);
             }
             return 0;
@@ -538,7 +555,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (!g_expanded) expandWidget();
             SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            refreshAfterInteraction();
             SetTimer(h, TIMER_TRAY, 200, nullptr);
+            return 0;
+
+        case WM_APP_THEME:
+            g_themeMode = (int)w;
+            setDayMode(themeModeIsLight(g_themeMode));
+            present();
             return 0;
 
         case WM_APP_TOPMOST:
@@ -577,6 +601,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             // 必须先注册离开追踪，否则展开后鼠标移开收不到 WM_MOUSELEAVE
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, h, 0};
             TrackMouseEvent(&tme);
+
+            // 鼠标刚移到悬浮清单上：先取一次最新数据再展开，免得显示旧内容
+            if (!g_hoverIn) {
+                g_hoverIn = true;
+                refreshAfterInteraction();
+            }
 
             if (!g_expanded) {
                 // 位移超过 4px 时判定为拖动，否则按单击处理
@@ -652,6 +682,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
 
         case WM_MOUSELEAVE:
+            g_hoverIn = false;
             if (g_hoverBtn != -1 || g_hoverRow != -1) {
                 g_hoverBtn = -1;
                 g_hoverRow = -1;
@@ -666,7 +697,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_pillWant = false;
                 updatePillTarget();
             }
-            if (g_expanded && !g_editing) SetTimer(h, TIMER_COLLAPSE, 340, nullptr);
+            if (g_expanded && !g_editing && !g_menuOpen) SetTimer(h, TIMER_COLLAPSE, 340, nullptr);
             return 0;
 
         // ---- 输入框的键盘与输入法
@@ -685,6 +716,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         commitEstEdit();
                         if (col < 2) beginEstEdit(col + 1);
                     }
+                } else {
+                    return 0;
+                }
+                g_caretOn = true;
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
+
+            // 日历里的时间格：只收数字，打满两位自动收下
+            if (g_timeEditCol >= 0) {
+                if (ch == 8) {
+                    if (!g_timeEditText.empty()) g_timeEditText.pop_back();
+                } else if (ch >= L'0' && ch <= L'9') {
+                    if (g_timeEditText.size() < 2) g_timeEditText += ch;
+                    if (g_timeEditText.size() == 2) commitTimeEdit();
                 } else {
                     return 0;
                 }
@@ -748,6 +794,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
             }
 
+            // 日历里的时间格：回车收下，Esc 放弃这次输入
+            if (g_timeEditCol >= 0) {
+                if (w == VK_RETURN || w == VK_TAB) {
+                    commitTimeEdit();
+                    InvalidateRect(h, nullptr, FALSE);
+                    return 0;
+                }
+                if (w == VK_ESCAPE) {
+                    g_timeEditCol = -1;
+                    g_timeEditText.clear();
+                    InvalidateRect(h, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // 网址输入框：Ctrl+V 粘一条，Enter跳到标题，Esc 离开输入框
             if (g_linkFocus) {
                 if (w == 'V' && (GetKeyState(VK_CONTROL) & 0x8000)) { pasteLinkUrl(); return 0; }
@@ -775,6 +836,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
                 if (g_pickingDate) {
                     g_pickingDate = false;
+                    g_timeEditCol = -1;
+                    g_timeEditText.clear();
                     g_editDue = g_customDue.empty() ? 4 : 3;
                     InvalidateRect(h, nullptr, FALSE);
                     return 0;
@@ -815,10 +878,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
 
         case WM_KILLFOCUS:
-            // 焦点转移到其他位置时按提交处理；刚取得焦点时的抖动除外。
-            // 右键菜单会临时抢前台，那种失焦不算离开输入
+            // 失焦不算确认：只收起并保留草稿，下次打开接着填。
+            // 刚取得焦点时的抖动、右键菜单临时抢前台，都不算离开输入
             if (g_editing && !g_menuOpen && GetTickCount() - g_focusAt > 250)
-                finishEdit(true, true);
+                finishEdit(false, true);
             return 0;
 
         case WM_LBUTTONDOWN: {
@@ -858,13 +921,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_LBUTTONUP: {
             int mx = GET_X_LPARAM(l), my = GET_Y_LPARAM(l);
             if (g_trayOpen) g_trayIdle = GetTickCount();
+            refreshAfterInteraction();      // 一次交互结束，补刷一次（拖动也在抬起时收尾）
             if (g_dragging) {
                 g_dragging = false;
                 g_pressPending = false;
                 ReleaseCapture();
                 saveSettings();
-                // 挪了位置，底下的桌面换了，重抓一次背景
-                recaptureBackground();
                 present();
                 return 0;
             }
@@ -886,7 +948,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (g_editing) {
                 // × 仅收起卡片，不关闭悬浮清单：圆点保留，单击即可重新展开
                 if (btn == 1) { collapseWidget(); return 0; }
-                if (btn == 4) { finishEdit(true, true); toggleTopmost(); return 0; }
+                if (btn == 4) { finishEdit(false, true); toggleTopmost(); return 0; }
 
                 if (g_pickingDate) {
                     int hit = hitCalendar(cx, cy);
@@ -896,6 +958,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         if (++g_pickMonth > 12) { g_pickMonth = 1; ++g_pickYear; }
                     } else if (hit == 3) {
                         g_pickingDate = false;
+                        g_timeEditCol = -1;
+                        g_timeEditText.clear();
                         g_editDue = g_customDue.empty() ? 4 : 3;
                     } else if (hit == 4) {
                         applyCalendar();
@@ -904,9 +968,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     } else if (hit == 6) {
                         g_pickHour = (g_pickHour + 1) % 24;
                     } else if (hit == 7) {
-                        g_pickMin = (g_pickMin + 55) % 60;
+                        g_pickMin = stepMinute5(g_pickMin, -5);
                     } else if (hit == 8) {
-                        g_pickMin = (g_pickMin + 5) % 60;
+                        g_pickMin = stepMinute5(g_pickMin, 5);
+                    } else if (hit == 9) {
+                        beginTimeEdit(0);
+                    } else if (hit == 10) {
+                        beginTimeEdit(1);
                     } else if (hit >= 100) {
                         g_pickDay = hit - 100;
                     }
@@ -931,13 +999,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         int i = hit - 20;
                         if (i == 0)      g_estDay = (g_estDay + 1) % 70;
                         else if (i == 1) g_estHour = (g_estHour + 1) % 24;
-                        else             g_estMinute = (g_estMinute + 5) % 60;
+                        else             g_estMinute = stepMinute5(g_estMinute, 5);
                     } else if (hit >= 10) {                  // 减
                         commitEstEdit();
                         int i = hit - 10;
                         if (i == 0)      g_estDay = (g_estDay + 69) % 70;
                         else if (i == 1) g_estHour = (g_estHour + 23) % 24;
-                        else             g_estMinute = (g_estMinute + 55) % 60;
+                        else             g_estMinute = stepMinute5(g_estMinute, -5);
                     }
                     InvalidateRect(h, nullptr, FALSE);
                     return 0;
@@ -987,14 +1055,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     } else {                                 // 预估那一排
                         int i = chip - 100;
                         if (i == EST_CUSTOM) openEstPicker();
-                        else if (i == EST_CHIPS - 1) g_editEst = -1;   // 不设
                         else g_editEst = i;
                     }
                     InvalidateRect(h, nullptr, FALSE);
                     return 0;
                 }
 
-                if (!hitInput(cx, cy)) finishEdit(true, true);   // 输入框外单击时提交；标题为空时保留草稿
+                if (!hitInput(cx, cy)) finishEdit(false, true);  // 输入框外单击只是离开输入，不算确认
                 return 0;
             }
 
@@ -1084,6 +1151,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 items[n++] = { L"添加任务", 2, true };
                 items[n++] = { L"刷新", 4, true };
                 items[n++] = { L"关闭悬浮清单", 5, false };
+                items[n++] = { L"退出 GoGoSpot", 6, false };
             }
 
             POINT pt;
@@ -1098,6 +1166,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     break;
                 case 4: refreshAsync(); break;
                 case 5: appSetWidgetEnabled(false); break;
+                case 6: appQuit(); break;
                 case 10: snoozeTask(taskId); break;
                 case 11: removeTask(taskId); break;
                 case 12: pinTask(taskId, !pinned); break;

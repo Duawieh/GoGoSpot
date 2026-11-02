@@ -1,5 +1,7 @@
 // ---- 工具 ----
 
+static void refreshAfterInteraction();   // 定义在 interactions.inc
+
 static wstring u8tow(const string& s) {
     if (s.empty()) return wstring();
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);

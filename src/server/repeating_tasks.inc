@@ -67,6 +67,15 @@ static string dueOf(const JVal& t) {
     return (d && d->kind == JVal::Str) ? d->str : string();
 }
 
+// 循环锚点：最初设定的循环日期。推迟只改 due，不动它，
+// 所以下一期仍按原节奏生成，被推迟的那一期就成了「错位」。
+// 老数据没有这个字段，退回 due（等于和以前一样）。
+static string originOf(const JVal& t) {
+    JVal* o = const_cast<JVal&>(t).get("route_origin_date");
+    if (o && o->kind == JVal::Str && validDue(o->str)) return o->str;
+    return dueOf(t);
+}
+
 // 清掉原任务的重复标记，保证同一条只派生一次
 static void clearRepeat(JVal& t) {
     JVal* r = t.get("repeat");
@@ -102,6 +111,8 @@ static void spawnNext(JVal& tasks, JVal& src, const string& dueStr) {
             kv.second.str = dueStr;
         }
     }
+    // 新一期的锚点就是它的 due，即原锚点加一个周期；复制过来的旧锚点必须覆盖掉
+    setStrField(copy, "route_origin_date", dueStr);
     tasks.arr.push_back(std::move(copy));
 }
 
@@ -227,7 +238,8 @@ static void sweepOverdueRepeating() {
         long long dueMs = dueToUnixMs(dueOf(t));
         if (dueMs <= 0 || dueMs > now) continue;
 
-        string nd = advanceDuePast(dueOf(t), rep, now);
+        // 从锚点推下一期：推迟过的任务会回到原来的节奏上
+        string nd = advanceDuePast(originOf(t), rep, now);
         if (nd.empty()) continue;
 
         spawnNext(*tasks, t, nd);
@@ -344,7 +356,8 @@ static Response apiToggle(const string& id) {
         if (nowDone) {
             string rep = repeatOf(t);
             if (!rep.empty()) {
-                string nd = nextDueOf(dueOf(t), rep);
+                // 从锚点加一个周期；推迟过的那一期不会把后面的节奏带偏
+                string nd = nextDueOf(originOf(t), rep);
                 if (!nd.empty()) spawnNext(*tasks, t, nd);
             }
         }
@@ -522,6 +535,17 @@ static Response apiSnooze(const string& id) {
 
         JVal* due = t.get("due");
         long long cur = (due && due->kind == JVal::Str) ? dueToUnixMs(due->str) : 0;
+
+        // 老数据没有锚点：把推迟前的 due 记成锚点，下一期仍按原节奏走。
+        // 已经有锚点的任务不动它，推迟只改 due。
+        JVal* rep = t.get("repeat");
+        bool repeating = rep && rep->kind == JVal::Str && !rep->str.empty();
+        JVal* rod = t.get("route_origin_date");
+        if (repeating && due && due->kind == JVal::Str && !due->str.empty() &&
+            (!rod || rod->kind != JVal::Str || rod->str.empty())) {
+            setStrField(t, "route_origin_date", due->str);
+        }
+
         long long base = (cur > nowUnixMs()) ? cur : nowUnixMs();
         string next = msToDueStr(base + 24LL * 3600000LL);
 
@@ -589,7 +613,9 @@ static Response handleApi(const string& method, const string& path,
         auto dump = []() {
             return string("\"widget\":") + (gWidgetEnabled ? "true" : "false") +
                    ",\"topmost\":" + (gTopmost ? "true" : "false") +
-                   ",\"autostart\":" + (gAutoStart ? "true" : "false");
+                   ",\"autostart\":" + (gAutoStart ? "true" : "false") +
+                   ",\"themeMode\":" + std::to_string(gThemeMode) +
+                   ",\"systemLight\":" + (systemUsesLightTheme() ? "true" : "false");
         };
         if (method == "GET") return jsonOk(dump());
         if (method != "POST") return jsonError(405, "use POST");
@@ -599,6 +625,8 @@ static Response handleApi(const string& method, const string& path,
         if (readBoolField(body, "widget", v))    { appSetWidgetEnabled(v); any = true; }
         if (readBoolField(body, "topmost", v))   { appSetTopmost(v);       any = true; }
         if (readBoolField(body, "autostart", v)) { appSetAutoStart(v);     any = true; }
+        int tm = 2;
+        if (readIntField(body, "themeMode", tm)) { appSetThemeMode(tm);    any = true; }
         if (!any) return jsonError(400, "no known key");
         return jsonOk(dump());
     }
@@ -609,6 +637,15 @@ static Response handleApi(const string& method, const string& path,
         bool flag = (on == q.end()) ? true : (on->second != "0");
         appSetTopmost(flag);
         return jsonOk(string("\"topmost\":") + (flag ? "true" : "false"));
+    }
+    // 控制台的三档主题开关：日间 / 跟随系统 / 夜间，也同步给悬浮清单
+    if (path == "/api/theme") {
+        if (method != "POST") return jsonError(405, "use POST");
+        auto it = q.find("mode");
+        string m = (it == q.end()) ? string("system") : it->second;
+        int mode = (m == "light") ? 0 : (m == "dark" ? 1 : 2);
+        appSetThemeMode(mode);
+        return jsonOk(string("\"themeMode\":") + std::to_string(mode));
     }
     if (path == "/api/tasks")    return apiTasks(method, body);
     if (path == "/api/widget")   return apiWidget();
