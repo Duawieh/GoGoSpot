@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8765/';
+const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8770/';
 const SHOTS = path.join(__dirname, 'shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 
@@ -18,7 +18,8 @@ function check(name, ok, detail = '') {
 async function requireIsolated() {
   const info = await fetch(BASE + 'api/info').then((r) => r.json());
   const f = String(info.dataFile || '').replace(/\\/g, '/');
-  if (!/\/build\/test\//.test(f)) {
+  // 相对路径（--data build/test/...）和绝对路径都要认，只认 build/test/ 这一段
+  if (!/(^|\/)build\/test\//.test(f)) {
     console.error('拒绝运行：数据目录是 ' + f + '，不是隔离副本。'
       + '请用 --data build/test/... 另起一个实例再测。');
     process.exit(2);
@@ -51,7 +52,8 @@ async function requireIsolated() {
 
   // ---- 添加：带截止 / 预估 / 标签 / 链接
   await page.fill('#taskInput', '写发布说明');
-  await page.fill('#estInput', '60');
+  // 新建任务默认预估 60 分钟，聚焦后单位推导为「时」并回填 1，所以这里填 1 就是 1 小时
+  await page.fill('#estInput', '1');
   await page.locator('#estInput').blur();
   await page.click('#dueBtn');
   await page.waitForTimeout(120);

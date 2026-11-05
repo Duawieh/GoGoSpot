@@ -4,7 +4,7 @@
 import http.client
 import os, json, time, threading, urllib.parse, os, sys
 
-HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8765'))
+HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8770'))
 RESULTS = []
 
 

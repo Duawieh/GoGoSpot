@@ -2,10 +2,14 @@
 // 直接包含 widget.cpp 编译，只跑断言，不建窗口。
 #include "../src/widget.cpp"
 
+// 外部接口的空实现：widget.cpp 只用到这几个，桩住就能单独链接
 void appSetWidgetEnabled(bool) {}
 void appQuit() {}
 bool appTopmostEnabled() { return false; }
 void appSetTopmost(bool) {}
+int appThemeMode() { return 2; }
+bool appOpenLocalPath(const std::wstring&) { return false; }
+const wchar_t* serverDataDir() { return L"."; }
 
 int wmain() {
     // paintRow 里画出来的两个圆心（卡片坐标：toCard 已经减掉 SHADOW）

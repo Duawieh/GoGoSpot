@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8765/';
+const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8770/';
 const SHOTS = path.join(__dirname, 'shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 const results = [];
@@ -31,7 +31,8 @@ const tomorrow = (h) => {
 async function requireIsolated() {
   const info = await fetch(BASE + 'api/info').then((r) => r.json());
   const f = String(info.dataFile || '').replace(/\\/g, '/');
-  if (!/\/build\/test\//.test(f)) {
+  // 相对路径（--data build/test/...）和绝对路径都要认，只认 build/test/ 这一段
+  if (!/(^|\/)build\/test\//.test(f)) {
     console.error('拒绝运行：数据目录是 ' + f + '，不是隔离副本。'
       + '请用 --data build/test/... 另起一个实例再测。');
     process.exit(2);
@@ -146,16 +147,34 @@ async function requireIsolated() {
     await ctx.close();
   }
 
-  // ---------- 5. 主题 ----------
+  // ---------- 5. 主题：三档开关 ----------
   ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   page = await ctx.newPage();
   await page.goto(BASE, { waitUntil: 'networkidle' });
-  const before = await page.getAttribute('html', 'data-theme');
-  await page.click('#btnTheme');
-  await page.waitForTimeout(200);
-  const after = await page.getAttribute('html', 'data-theme');
-  check('主题可切换', before !== after, before + ' → ' + after);
-  await page.screenshot({ path: path.join(SHOTS, `c9-theme-${after}.png`) });
+  const themeOf = () => page.getAttribute('html', 'data-theme');
+  const modeOf = () => page.getAttribute('#themeSw', 'data-mode');
+
+  await page.click('#themeSw [data-mode="dark"]');
+  await page.waitForTimeout(250);
+  check('选夜间 → 深色', (await themeOf()) === 'dark', 'data-theme=' + (await themeOf()));
+  check('开关跟到夜间', (await modeOf()) === 'dark', 'data-mode=' + (await modeOf()));
+  await page.screenshot({ path: path.join(SHOTS, 'c9-theme-dark.png') });
+
+  await page.click('#themeSw [data-mode="light"]');
+  await page.waitForTimeout(250);
+  check('选日间 → 浅色', (await themeOf()) === 'light', 'data-theme=' + (await themeOf()));
+  check('开关跟到日间', (await modeOf()) === 'light', 'data-mode=' + (await modeOf()));
+  await page.screenshot({ path: path.join(SHOTS, 'c9-theme-light.png') });
+
+  // 跟随系统：模式必须是 system，解析结果只能是深或浅
+  await page.click('#themeSw [data-mode="system"]');
+  await page.waitForTimeout(250);
+  const sysTheme = await themeOf();
+  check('选跟随系统 → 模式为 system', (await modeOf()) === 'system', 'data-mode=' + (await modeOf()));
+  check('跟随系统解析出深或浅', sysTheme === 'light' || sysTheme === 'dark', 'data-theme=' + sysTheme);
+
+  // 主题是全局设置，测完恢复跟随系统，不给后面的脚本留状态
+  await api('api/theme?mode=system', { method: 'POST' });
   await ctx.close();
 
   // ---------- 6. 性能：500 条 ----------

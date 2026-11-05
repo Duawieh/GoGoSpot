@@ -2,7 +2,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
-const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8765/';
+const BASE = process.env.GOGOSPOT_BASE || 'http://127.0.0.1:8770/';
 const SHOTS = path.join(__dirname, 'shots');
 const results = [];
 function check(name, ok, detail = '') {
@@ -17,7 +17,8 @@ const mk = (i, title) => ({ id: 'k' + i, title, done: false, estimate: 30, due: 
 async function requireIsolated() {
   const info = await fetch(BASE + 'api/info').then((r) => r.json());
   const f = String(info.dataFile || '').replace(/\\/g, '/');
-  if (!/\/build\/test\//.test(f)) {
+  // 相对路径（--data build/test/...）和绝对路径都要认，只认 build/test/ 这一段
+  if (!/(^|\/)build\/test\//.test(f)) {
     console.error('拒绝运行：数据目录是 ' + f + '，不是隔离副本。'
       + '请用 --data build/test/... 另起一个实例再测。');
     process.exit(2);

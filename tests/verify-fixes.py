@@ -1,5 +1,5 @@
-# 1.0.1 修复回归：逐条对应复测报告里的 P0 / P1 编号
-# 只打 127.0.0.1:8765 的隔离副本（build/test/run2），不碰真实 data/。
+# 接口回归测试：逐条复测修复报告里的 P0 / P1 编号，含两段各 22 秒的逾期扫描。
+# 必须打隔离副本：运行前用 /api/info 确认 dataFile 在 build/test/ 下。
 
 import http.client
 import json
@@ -8,7 +8,7 @@ import socket
 import time
 import urllib.parse
 
-HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8765'))
+HOST, PORT = '127.0.0.1', int(os.environ.get('GOGOSPOT_PORT', '8770'))
 RESULTS = []
 
 
