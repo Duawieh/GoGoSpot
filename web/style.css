@@ -231,60 +231,34 @@ body {
   --ts-w: 84px;
   --ts-h: 30px;
   --ts-thumb: 26px;
-  --ts-x: 27px;                 /* 滑块左缘：中间那档 */
-  --ts-bg-a: #6a4ad8;
-  --ts-bg-b: #3a2796;
-  --ts-ico: #6d46e0;
+  --ts-x: 29px;                 /* 滑块左缘：中间那档 */
+  --ts-bg: linear-gradient(90deg, #5b6cff, #a06bff);
+  --ts-ico: #6d46e0;            /* 选中图标：压在白色滑块上 */
+  --ts-ico-idle: rgba(255, 255, 255, .78);
 
   position: relative;
   width: var(--ts-w); height: var(--ts-h);
   border-radius: calc(var(--ts-h) / 2);
-  background: linear-gradient(135deg, var(--ts-bg-a), var(--ts-bg-b));
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, .28);
+  background: var(--ts-bg);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, .16);
   display: flex;
   align-items: center;
-  transition: background .28s ease;
   flex: none;
 }
 
-/* 三档：左日间（蓝）、中跟随系统（紫）、右夜间（灰）。
-   底色压深一档，烫金纹饰才跳得出来 */
+/* 三档底色：日间淡蓝、跟随系统品牌紫、夜间银灰。
+   滑块恒为白色，靠底色深浅和投影把当前档位区分出来 */
 .theme-sw[data-mode="light"] {
-  --ts-x: 2px;
-  --ts-bg-a: #2f7fc4;
-  --ts-bg-b: #0f4c86;
+  --ts-x: 1px;
+  --ts-bg: linear-gradient(90deg, #f6fbff, #cfe4fb);
   --ts-ico: #2f7fd4;
+  --ts-ico-idle: #6a9bc9;
 }
 .theme-sw[data-mode="dark"] {
-  --ts-x: 56px;
-  --ts-bg-a: #3a404e;
-  --ts-bg-b: #171a21;
+  --ts-x: 57px;
+  --ts-bg: linear-gradient(90deg, #3b4048, #9aa3b0);
   --ts-ico: #4a5163;
-}
-
-.theme-sw-art {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.theme-sw-art .tsa {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  transition: opacity .24s ease;
-  /* 压印感：细线压在饱和底色上会糊，补一层极淡的暗影把线条顶起来 */
-  filter: drop-shadow(0 .7px 0 rgba(8, 16, 34, .45));
-}
-
-.theme-sw[data-mode="light"]  .tsa-day,
-.theme-sw[data-mode="system"] .tsa-sys,
-.theme-sw[data-mode="dark"]   .tsa-night {
-  opacity: .92;
+  --ts-ico-idle: rgba(255, 255, 255, .82);
 }
 
 .theme-sw-thumb {
@@ -293,30 +267,16 @@ body {
   width: var(--ts-thumb); height: var(--ts-thumb);
   border-radius: 50%;
   background: radial-gradient(circle at 34% 28%, #ffffff, #f2f4f8 62%, #e3e7ef);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, .34), inset 0 -1px 1px rgba(15, 23, 42, .06);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, .3), inset 0 -1px 1px rgba(15, 23, 42, .06);
   transform: translateX(var(--ts-x));
   transition: transform .28s cubic-bezier(.34, 1.4, .5, 1);
-  display: grid;
-  place-items: center;
-  color: var(--ts-ico);
   pointer-events: none;
 }
 
-.theme-sw-thumb .tsi {
-  grid-area: 1 / 1;
-  transition: opacity .2s ease, transform .2s ease;
-  opacity: 0;
-  transform: scale(.7);
-}
-.theme-sw[data-mode="light"]  .tsi-sun,
-.theme-sw[data-mode="system"] .tsi-gear,
-.theme-sw[data-mode="dark"]   .tsi-moon {
-  opacity: 1;
-  transform: scale(1);
-}
-
-/* 三块可点区域，各占三分之一 */
+/* 三块可点区域，各占三分之一；图标画在各自按钮上，选中那档压在滑块里 */
 .theme-sw-stop {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   height: 100%;
   border: 0;
@@ -324,6 +284,18 @@ body {
   padding: 0;
   cursor: pointer;
   border-radius: calc(var(--ts-h) / 2);
+  display: grid;
+  place-items: center;
+  color: var(--ts-ico-idle);
+  transition: color .2s ease;
+}
+.theme-sw-stop .tsi {
+  transition: opacity .2s ease, transform .2s ease;
+}
+.theme-sw[data-mode="light"]  .theme-sw-stop[data-mode="light"],
+.theme-sw[data-mode="system"] .theme-sw-stop[data-mode="system"],
+.theme-sw[data-mode="dark"]   .theme-sw-stop[data-mode="dark"] {
+  color: var(--ts-ico);
 }
 .theme-sw-stop:focus-visible {
   outline: 2px solid rgba(255, 255, 255, .85);

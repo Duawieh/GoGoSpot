@@ -38,6 +38,7 @@ static const UINT WM_APP_TOPMOST        = WM_APP + 2;
 static const UINT WM_APP_TRAY_OPEN      = WM_APP + 3;
 static const UINT WM_APP_REFRESH        = WM_APP + 4;   // 交互结束后补一次刷新
 static const UINT WM_APP_THEME          = WM_APP + 5;   // 控制台切了日间/夜间主题
+static const UINT WM_APP_TOPMOST_REFRESH = WM_APP + 6;  // 启动后把置顶重新走一遍（创建阶段设不上）
 
 // 部分 Windows SDK 未定义该常量，缺失时在此补充
 #ifndef WM_DPICHANGED

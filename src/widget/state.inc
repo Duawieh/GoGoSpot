@@ -111,6 +111,7 @@ static int     g_themeMode = 2;      // 0 日间、1 夜间、2 跟随系统
 
 // 置顶模式使窗口保持在普通窗口上方。owned 窗口不支持 topmost，因此需移除 owner 关联。
 static bool    g_topmost  = false;
+static bool    g_topmostLocal = false;   // 连不上后台时本地改过置顶，暂不让守护回拉
 static bool    g_hiddenForFullscreen = false;
 
 // 托盘点开的临时会话：展开 + 置顶，2 秒没交互就收回，收回后恢复原状

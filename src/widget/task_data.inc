@@ -1,6 +1,7 @@
 // ---- 数据 ----
 
 static void rebuildWorkload();   // 定义在「绘制辅助」那段
+static void sortByUrgency();     // 同上
 static void splitTabs(const string& line, std::vector<string>& out) {
     out.clear();
     size_t start = 0;
@@ -55,6 +56,7 @@ static bool fetchTasks() {
         Task t;
         t.id = u8tow(f[0]);
         t.estimate = atoi(f[2].c_str());
+        if (t.estimate <= 0) t.estimate = 60;   // 旧数据没填预估的按 1 小时显示
         t.dueMs = _strtoi64(f[3].c_str(), nullptr, 10);
         t.title = u8tow(f[4]);
         if (f.size() >= 7) t.startedAt = _strtoi64(f[6].c_str(), nullptr, 10);
@@ -71,20 +73,13 @@ static bool fetchTasks() {
         list.push_back(std::move(t));
     }
 
-    // 置顶的先排最前面；同组内按到期时间，没截止的垫底，同时刻保持原来的先后
-    std::stable_sort(list.begin(), list.end(), [](const Task& a, const Task& b) {
-        if (a.pinned != b.pinned) return a.pinned;
-        if (a.dueMs == 0 && b.dueMs == 0) return false;
-        if (a.dueMs == 0) return false;
-        if (b.dueMs == 0) return true;
-        return a.dueMs < b.dueMs;
-    });
-
     g_tasks = std::move(list);
     rebuildWorkload();          // 任务变了，负载表跟着重算
+    sortByUrgency();            // 黄线算好之后才能判紧急，列表按它重排
     g_pending = pending;
     g_total = total;
     g_loaded = true;
+    g_topmostLocal = false;     // 后台回来了，置顶重新以后台为准
     // 缺少“#待办 总数”行表示后台返回了错误 JSON，不能按空列表处理
     g_loadError = !sawHeader;
 
@@ -96,6 +91,9 @@ static bool fetchTasks() {
     for (size_t i = 0; i < g_tasks.size(); ++i) {
         if (g_tasks[i].startedAt > 0) { anyRunning = true; break; }
     }
+    // 控制台启动的任务也要让圆点外圈转起来；否则要等鼠标碰到悬浮清单才 kickProg。
+    if (anyRunning && !g_progOn) kickProg();
+
     static bool tickOn = false;
     if (anyRunning && !tickOn) {
         SetTimer(g_hwnd, TIMER_TICK, 1000, nullptr);

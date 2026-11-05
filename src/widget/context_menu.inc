@@ -270,29 +270,31 @@ static void placeWindow(int screenX, int screenY, int w, int h) {
 
 static void present();
 
-// 前台是不是全屏程序：只看焦点窗口的矩形——尺寸等于屏幕，或四边盖住屏幕，就算全屏。
-// 不用 SHQueryUserNotificationState：它要问 shell，实测约 196µs，是这里几个窗口 API
-// 加起来的近百倍；而且它把「最大化窗口」也报成忙，正是之前误藏悬浮清单的来源。
+// ---- 置顶 ----
+//
+// 只有两条规则：
+//   1. 置顶开着时窗口要稳在置顶层——样式位丢了就整套重设，被压住才提回来；
+//      没被压住就一动不动，每帧 SetWindowPos 会把别的置顶窗口一起顶下去。
+//   2. 前台是全屏程序时让开，退出全屏再回来。
+//
+// 全屏只看一条：窗口矩形盖住整个显示器。桌面、壁纸、任务栏这些 shell 窗口本来就
+// 铺满屏幕，单独排除。坐标一律取 GetWindowRect / GetMonitorInfo——两者都在本进程的
+// per-monitor DPI 感知下，系统缩放多少都不影响比较，不要换成 GetSystemMetrics 的像素数。
+
+static bool isShellWindow(HWND h) {
+    wchar_t cls[64] = {0};
+    GetClassNameW(h, cls, 64);
+    return wcscmp(cls, L"Progman") == 0 ||
+           wcscmp(cls, L"WorkerW") == 0 ||
+           wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
+           wcscmp(cls, L"SysListView32") == 0 ||
+           wcscmp(cls, L"Shell_TrayWnd") == 0;
+}
+
+// 前台是不是全屏程序
 static bool fullscreenAppInFront() {
     HWND fg = GetForegroundWindow();
-    if (!fg || fg == g_hwnd) return false;
-
-    // 桌面和任务栏本身就铺满屏幕（Progman 正好是 0,0 屏幕宽高），但它们不是「全屏程序」。
-    // 点一下桌面前台就变成它，不排除的话悬浮清单会立刻被藏起来；
-    // 启动时前台往往也是桌面，于是「刚启动就不见」。
-    wchar_t cls[64] = {0};
-    GetClassNameW(fg, cls, 64);
-    if (wcscmp(cls, L"Progman") == 0 ||
-        wcscmp(cls, L"WorkerW") == 0 ||
-        wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
-        wcscmp(cls, L"SysListView32") == 0 ||
-        wcscmp(cls, L"Shell_TrayWnd") == 0) {
-        return false;
-    }
-
-    // 最大化窗口即使盖住整个屏幕（任务栏自动隐藏时就是这样）也不算全屏。
-    // 只看矩形会把 VS Code 这类最大化窗口误判成全屏，启动时把悬浮清单藏掉。
-    if (IsZoomed(fg)) return false;
+    if (!fg || fg == g_hwnd || isShellWindow(fg)) return false;
 
     RECT r{};
     if (!GetWindowRect(fg, &r)) return false;
@@ -302,43 +304,42 @@ static bool fullscreenAppInFront() {
     mi.cbSize = sizeof(mi);
     if (!mon || !GetMonitorInfoW(mon, &mi)) return false;
 
-    // 任务栏可见时最大化窗口只盖住工作区，高度差一个任务栏，两种判定都不会命中
-    int mw = mi.rcMonitor.right - mi.rcMonitor.left;
-    int mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-    if (r.right - r.left == mw && r.bottom - r.top == mh) return true;
-
-    return r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top &&
-           r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom;
+    // 大于等于显示器范围就算全屏；最大化窗口只到工作区，不会命中
+    return r.left   <= mi.rcMonitor.left &&
+           r.top    <= mi.rcMonitor.top &&
+           r.right  >= mi.rcMonitor.right &&
+           r.bottom >= mi.rcMonitor.bottom;
 }
 
-// 切置顶。owned 窗口设 HWND_TOPMOST 不生效，所以置顶时先把 owner 摘掉；
+// 窗口正中间压着哪个窗口：返回自己说明在最上面，返回别人说明被盖住了
+static HWND windowUnderWidget() {
+    RECT wr{};
+    if (!GetWindowRect(g_hwnd, &wr)) return nullptr;
+    POINT c{ (wr.left + wr.right) / 2, (wr.top + wr.bottom) / 2 };
+    return WindowFromPoint(c);
+}
+
+// 切置顶。owned 窗口设不上置顶，所以置顶时先把 owner 摘掉；
 // 关掉时再把 owner 挂回桌面，Win+D 才会跟着浮上来。
 static void applyTopmost() {
     if (!g_hwnd) return;
 
+    LONG_PTR ex = GetWindowLongPtrW(g_hwnd, GWL_EXSTYLE);
     if (g_topmost) {
         SetWindowLongPtrW(g_hwnd, GWLP_HWNDPARENT, 0);
-        // SetWindowPos(HWND_TOPMOST) 在有些情况下不生效（实测新起的实例样式位就是没加上），
-        // 这里直接把 WS_EX_TOPMOST 写进扩展样式，再让 SetWindowPos 去调整 Z 序
-        LONG_PTR ex = GetWindowLongPtrW(g_hwnd, GWL_EXSTYLE);
         if (!(ex & WS_EX_TOPMOST)) {
             SetWindowLongPtrW(g_hwnd, GWL_EXSTYLE, ex | WS_EX_TOPMOST);
         }
         SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     } else {
-        // 同时清除扩展样式并设置 NOTOPMOST，确保托盘临时置顶状态一并解除
-        LONG_PTR ex = GetWindowLongPtrW(g_hwnd, GWL_EXSTYLE);
-        if (ex & WS_EX_TOPMOST) SetWindowLongPtrW(g_hwnd, GWL_EXSTYLE, ex & ~WS_EX_TOPMOST);
+        if (ex & WS_EX_TOPMOST) {
+            SetWindowLongPtrW(g_hwnd, GWL_EXSTYLE, ex & ~WS_EX_TOPMOST);
+        }
         SetWindowPos(g_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         HWND progman = FindWindowW(L"Progman", nullptr);
         if (progman) SetWindowLongPtrW(g_hwnd, GWLP_HWNDPARENT, (LONG_PTR)progman);
-    }
-
-    if (g_hiddenForFullscreen) {
-        g_hiddenForFullscreen = false;
-        if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
     }
     present();
 }
@@ -352,6 +353,7 @@ static void toggleTopmost() {
 
     if (g_port == 0) findServerPort();
     if (g_port == 0) {                  // 连不上后台就本地生效，至少按钮有反应
+        g_topmostLocal = true;          // 后台回来之前别让守护把它拉回去
         g_topmost = on;
         applyTopmost();
         InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -362,59 +364,61 @@ static void toggleTopmost() {
 }
 
 static void keepAboveDesktop() {
-    // 右键菜单展开时不动 Z 序：菜单是独立置顶窗口，重新抢置顶会把它压下去
-    if (g_menuOpen) return;
-
-    // 设置里的置顶是唯一事实来源。窗口本地可能在启动阶段读到旧值，
-    // 或者错过一次通知；每轮守护都对齐，避免「设置里开着、窗口却没置顶」。
-    bool wantTopmost = appTopmostEnabled();
-    if (g_topmost != wantTopmost) {
-        g_topmost = wantTopmost;
-        applyTopmost();
-        return;
+    // 右键菜单展开时不动 Z 序：菜单是独立置顶窗口，重新抢置顶会把它压下去。
+    // 标志还挂着但菜单窗口已经不可见（被系统回收、切了虚拟桌面）时要放行，
+    // 否则守护会永久停摆，置顶丢了也没人补。
+    if (g_menuOpen) {
+        if (g_menuWnd && IsWindow(g_menuWnd) && IsWindowVisible(g_menuWnd)) return;
+        g_menuOpen = false;
     }
 
-    // 置顶模式：保持在普通窗口之上；前台为全屏程序时暂时隐藏，避免干扰
-    if (g_topmost) {
-        // 第一轮守护把「启动时已经在全屏」也当作刚切进全屏；退出全屏后恢复。
-        bool fs = fullscreenAppInFront();
-        bool entered = fs && !g_fsPrev;
+    // 全屏只在翻转时动手：从托盘临时叫出来的那一次不会被下一帧立刻收回去
+    bool fs = fullscreenAppInFront();
+    if (fs != g_fsPrev) {
         g_fsPrev = fs;
-
-        if (entered && !g_hiddenForFullscreen) {
-            g_hiddenForFullscreen = true;
-            ShowWindow(g_hwnd, SW_HIDE);
-        } else if (!fs && g_hiddenForFullscreen) {
+        if (fs) {
+            if (g_widgetOn) {
+                g_hiddenForFullscreen = true;
+                ShowWindow(g_hwnd, SW_HIDE);
+            }
+        } else if (g_hiddenForFullscreen) {
             g_hiddenForFullscreen = false;
             if (g_widgetOn) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
         }
-        // 置顶状态有丢失的情况（窗口会永久沉到普通层，用户看到的就是“悬浮清单不见了”）。
-        // 每 600ms 校验一次样式位，缺了就整段重设。
-        // 不看 fs：前台是不是全屏跟置顶样式无关，之前放在 !fs 里面，
-        // 全屏时这条就永远不跑，启动阶段没加上就一直沉在下面。
+    }
+
+    if (!g_widgetOn) return;
+
+    // 设置里的置顶是唯一事实来源；本地兜底改过时先不回拉
+    if (!g_topmostLocal) {
+        bool want = appTopmostEnabled();
+        if (g_topmost != want) {
+            g_topmost = want;
+            applyTopmost();
+            return;
+        }
+    }
+
+    if (g_hiddenForFullscreen) return;
+
+    HWND under = windowUnderWidget();
+    bool covered = (under && under != g_hwnd);
+
+    if (g_topmost) {
+        // 不变式：置顶开着、清单该显示时，窗口必须可见
+        if (!IsWindowVisible(g_hwnd)) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+
         LONG_PTR ex = GetWindowLongPtrW(g_hwnd, GWL_EXSTYLE);
-        if (ex & WS_EX_TOPMOST) {
-            SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        } else {
+        if (!(ex & WS_EX_TOPMOST) || covered) {
+            // 走 applyTopmost：它会先摘 owner。owned 窗口设不上置顶，
+            // 只补样式位会留下「位是置顶的、窗口却浮不上来」的死状态。
             applyTopmost();
         }
         return;
     }
 
-    RECT wr{};
-    GetWindowRect(g_hwnd, &wr);
-    POINT pt{ (wr.left + wr.right) / 2, (wr.top + wr.bottom) / 2 };
-
-    HWND under = WindowFromPoint(pt);
-    if (!under || under == g_hwnd) return;
-
-    wchar_t cls[64] = {0};
-    GetClassNameW(under, cls, 64);
-    if (wcscmp(cls, L"SysListView32") == 0 ||
-        wcscmp(cls, L"SHELLDLL_DefView") == 0 ||
-        wcscmp(cls, L"Progman") == 0 ||
-        wcscmp(cls, L"WorkerW") == 0) {
+    // 不置顶：只保证不被桌面吞掉——窗口挂着桌面当 owner，会被压到所有窗口下面
+    if (covered && isShellWindow(under)) {
         SetWindowPos(g_hwnd, HWND_TOP, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         present();
@@ -667,6 +671,9 @@ static void endTraySession() {
         g_widgetOn = false;                // 打开前是关着的，再关回去；设置文件不动
         ShowWindow(g_hwnd, SW_HIDE);
     }
+    // 收尾以设置为准：本地值过期时 applyTopmost 会把清单留在非置顶层，
+    // 表现就是「托盘里点开一下，两秒后又不见了」。
+    if (!g_topmostLocal) g_topmost = appTopmostEnabled();
     applyTopmost();                        // 回到设置里那一层
 }
 

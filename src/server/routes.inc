@@ -133,7 +133,7 @@ static void setStrField(JVal& t, const char* key, const string& val) {
 // 控制台保存的是整份数据，这里要区分「改期」和「临时推迟」：
 // 改期 = 重新锚定，锚点跟着 due 走；推迟只改 due，锚点不动（下一期还按老节奏生成）。
 // 判断依据是与磁盘上同 id 的旧 due 比：变了就是改期，新任务则以当前 due 作为锚点；
-// 旧 due 没变时连缺失的锚点也不补，避免一次无关的保存把推迟过的节奏改掉。
+// 旧 due 没变时以磁盘上的锚点为准，客户端手里的旧副本不能把推迟过的节奏覆盖回去。
 // 没有 repeat 的任务不需要锚点，残留的清掉。
 static bool reanchorRepeats(JVal& root) {
     JVal old;
@@ -146,9 +146,10 @@ static bool reanchorRepeats(JVal& root) {
         }
     }
 
-    // 找到同 id 的旧任务时返回 true，并通过 out 带出旧 due（可能为空）
-    auto oldDueOf = [&](const string& id, string& out) -> bool {
-        out.clear();
+    // 找到同 id 的旧任务时返回 true，并通过 out 带出旧 due 与旧锚点（可能为空）
+    auto oldTaskOf = [&](const string& id, string& dueOut, string& anchorOut) -> bool {
+        dueOut.clear();
+        anchorOut.clear();
         if (!haveOld) return false;
         JVal* arr = old.get("tasks");
         if (!arr || arr->kind != JVal::Arr) return false;
@@ -157,7 +158,9 @@ static bool reanchorRepeats(JVal& root) {
             JVal* tid = t.get("id");
             if (!tid || tid->kind != JVal::Str || tid->str != id) continue;
             JVal* d = t.get("due");
-            if (d && d->kind == JVal::Str) out = d->str;
+            if (d && d->kind == JVal::Str) dueOut = d->str;
+            JVal* o = t.get("route_origin_date");
+            if (o && o->kind == JVal::Str) anchorOut = o->str;
             return true;
         }
         return false;
@@ -186,14 +189,22 @@ static bool reanchorRepeats(JVal& root) {
         JVal* tid = t.get("id");
         string id = (tid && tid->kind == JVal::Str) ? tid->str : string();
 
-        string prevDue;
-        bool found = oldDueOf(id, prevDue);
+        string prevDue, prevAnchor;
+        bool found = oldTaskOf(id, prevDue, prevAnchor);
         bool needAnchor = !found || due != prevDue;
 
         // 新任务、或者截止时间变了，才把锚点重新定到 due；
         // 只改标题/预估这类保存不动锚点。
-        if (needAnchor && (!rod || rod->kind != JVal::Str || rod->str != due)) {
-            setStrField(t, "route_origin_date", due);
+        if (needAnchor) {
+            if (!rod || rod->kind != JVal::Str || rod->str != due) {
+                setStrField(t, "route_origin_date", due);
+                changed = true;
+            }
+        } else if (!prevAnchor.empty() &&
+                   (!rod || rod->kind != JVal::Str || rod->str != prevAnchor)) {
+            // 截止时间没变就是一次普通保存：磁盘上的锚点说了算，
+            // 防止客户端拿旧副本把推迟过的节奏覆盖回去
+            setStrField(t, "route_origin_date", prevAnchor);
             changed = true;
         }
     }
@@ -500,7 +511,9 @@ static Response apiWidget() {
             rows += '\t';
             rows += '0';
             rows += '\t';
-            rows += (est && est->kind == JVal::Num) ? std::to_string((long long)est->num) : "0";
+            long long estMin = (est && est->kind == JVal::Num) ? (long long)std::ceil(est->num) : 0;
+            if (estMin <= 0) estMin = 60;             // 小数分钟向上取整；没填预估按 1 小时
+            rows += std::to_string(estMin);
             rows += '\t';
 
             JVal* due = t.get("due");

@@ -551,8 +551,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (g_hiddenForFullscreen) {
                 g_hiddenForFullscreen = false;
                 ShowWindow(h, SW_SHOWNOACTIVATE);
+            } else if (!IsWindowVisible(h)) {
+                ShowWindow(h, SW_SHOWNOACTIVATE);   // 被别的路径藏掉了，点托盘就该出来
             }
             if (!g_expanded) expandWidget();
+            // 临时置顶按设置来，收起时才不会还原成过期的那一层
+            if (!g_topmostLocal) g_topmost = appTopmostEnabled();
             SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             refreshAfterInteraction();
@@ -566,8 +570,23 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
 
         case WM_APP_TOPMOST:
+            g_topmostLocal = false;         // 后台的答复是准的
             g_topmost = (w != 0);
             applyTopmost();
+            return 0;
+
+        case WM_APP_TOPMOST_REFRESH:
+            // 启动时把窗口提到它自己那一层的顶部。
+            // 置顶：创建阶段设的置顶有时不生效，补一次完整的「取消 → 置顶」。
+            // 普通：窗口挂着桌面当 owner，不主动提一次会停在所有窗口下面，等于没启动。
+            if (g_topmost) {
+                SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                applyTopmost();
+            } else {
+                SetWindowPos(h, HWND_TOP, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
             return 0;
 
         case WM_APP_WIDGET_ENABLED: {
@@ -1143,7 +1162,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 taskId = g_tasks[idx].id;
                 pinned = g_tasks[idx].pinned;
                 items[n++] = { pinned ? L"取消置顶" : L"置顶", 12, false };
-                items[n++] = { L"推迟一天", 10, false };
+                // 没有截止日期的任务推不了：硬推会给它凭空造一个明天到期
+                if (g_tasks[idx].dueMs > 0) items[n++] = { L"推迟一天", 10, false };
                 items[n++] = { L"删除任务", 11, true };
                 items[n++] = { L"打开控制台", 1, false };
             } else {

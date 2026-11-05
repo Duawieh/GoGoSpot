@@ -82,6 +82,7 @@ const state = {
   view: 'all',
   estimate: 60,             // 新建任务默认 1 小时，不再允许空预估
   workload: null,           // 截止时刻 → 黄色线（毫秒），render 时重算
+  baseTasks: [],            // 上次与服务端同步的副本，保存前做三方合并
   dueDate: '',
   dueTime: '23:59',
   query: '',
@@ -250,7 +251,7 @@ function normalize(t) {
     done: !!src.done,
     estimate: Number.isFinite(Number(src.estimate)) && Number(src.estimate) > 0
       ? Math.min(Math.round(Number(src.estimate) * 60) / 60, EST_MAX)
-      : 0,
+      : 60,                     // 不再有无预估状态，旧数据按 1 小时算
     due,
     tags: Array.isArray(src.tags) ? src.tags.filter((x) => typeof x === 'string').slice(0, 6) : [],
     links: Array.isArray(src.links)
@@ -284,6 +285,40 @@ function sanitizeIds(list) {
     used.add(id);
   }
   return list;
+}
+
+const cloneTasks = (list) => list.map((t) => JSON.parse(JSON.stringify(t)));
+
+// 单条任务的三方合并：本地没改过的字段取远端，改过的保留本地。
+// 控制台只改标题时，不会把悬浮清单刚改的 due / pinned / startedAt 一起回滚。
+function mergeTask(base, local, remote) {
+  const out = { ...local };
+  for (const key of Object.keys(remote)) {
+    if (key === 'id') continue;
+    if (JSON.stringify(local[key]) === JSON.stringify(base[key])) out[key] = remote[key];
+  }
+  return out;
+}
+
+// base / local / remote 都是 normalize 过的任务数组。
+// 远端新增保留，本地新增保留，base 有而本地没有视为删除，两边都有则逐字段合并。
+function mergeTasks(base, local, remote) {
+  const baseMap = new Map(base.map((t) => [t.id, t]));
+  const localMap = new Map(local.map((t) => [t.id, t]));
+  const remoteMap = new Map(remote.map((t) => [t.id, t]));
+  const out = [];
+  for (const l of local) {
+    const b = baseMap.get(l.id);
+    const r = remoteMap.get(l.id);
+    if (!b) { out.push(l); continue; }        // 控制台新增
+    if (!r) continue;                          // 远端已删
+    out.push(mergeTask(b, l, r));
+  }
+  for (const r of remote) {
+    if (localMap.has(r.id) || baseMap.has(r.id)) continue;
+    out.push(r);                               // 远端新增（悬浮清单加的）
+  }
+  return out;
 }
 
 /* ---------------------------------------------------------------- 存储 */
@@ -324,6 +359,22 @@ async function saveNow(retry) {
 
   const attempt = retry || 0;
   try {
+    // 先取服务端最新版本，做三方合并。控制台可能是几分钟前的快照，
+    // 直接整份 PUT 会把悬浮清单这期间新增/推迟/置顶的改动覆盖掉。
+    const latestRes = await fetch('/api/tasks', { cache: 'no-store' });
+    if (!latestRes.ok) throw new Error('HTTP ' + latestRes.status);
+    const latest = await latestRes.json();
+    if (!latest || !Array.isArray(latest.tasks)) throw new Error('数据格式不对');
+    const remote = latest.tasks.filter(isTaskObject).map(normalize);
+    const merged = mergeTasks(state.baseTasks || [], state.tasks, remote);
+    const before = JSON.stringify(state.tasks);
+    state.tasks = merged;
+    if (JSON.stringify(state.tasks) !== before) {
+      const keepY = window.scrollY;
+      render();
+      window.scrollTo(0, keepY);
+    }
+
     const res = await fetch('/api/tasks', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -338,6 +389,7 @@ async function saveNow(retry) {
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
     const ss = String(d.getSeconds()).padStart(2, '0');
+    state.baseTasks = cloneTasks(state.tasks);
     setSaveState('ok', `已保存 ${hh}:${mm}:${ss}`);
   } catch (e) {
     saveGate.inflight = false;
@@ -365,6 +417,7 @@ async function loadTasks() {
     const data = await res.json();
     if (!data || !Array.isArray(data.tasks)) throw new Error('数据格式不对');
     state.tasks = sanitizeIds(data.tasks.filter(isTaskObject).map(normalize));
+    state.baseTasks = cloneTasks(state.tasks);
     state.loadError = false;
     setSaveState('ok', '已同步');
   } catch (e) {
@@ -376,12 +429,42 @@ async function loadTasks() {
   state.loaded = true;
 }
 
+// 控制台在后台时悬浮清单可能改了任务；切回来先静默同步一次。
+// 有未保存改动、正在保存或编辑弹窗时不打断，等保存/关弹窗后再说。
+let syncingFromServer = false;
+async function syncFromServer() {
+  if (syncingFromServer) return;
+  if (!state.loaded || state.loadError) return;
+  if (document.visibilityState === 'hidden') return;
+  if (saveGate.inflight || state.saveTimer) return;
+  if (editor.id) return;
+  syncingFromServer = true;
+  try {
+    const keepY = window.scrollY;
+    await loadTasks();
+    if (!state.loadError) {
+      render();
+      window.scrollTo(0, keepY);
+    }
+  } finally {
+    syncingFromServer = false;
+  }
+}
+window.addEventListener('focus', syncFromServer);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') syncFromServer();
+});
+
 /* ---------------------------------------------------------------- 渲染 */
 
-// 和悬浮清单共用一套排序：依次按置顶状态和截止时间排序，无截止时间的任务排在末尾；
-// 完全相同的保持原来的先后（sort 是稳定的）
-function byPinThenDue(a, b) {
+// 和悬浮清单共用一套排序：置顶最前，其次按紧急程度（红 → 黄 → 普通），
+// 再按截止时间，无截止时间的垫底；完全相同的保持原来的先后（sort 是稳定的）。
+// 紧急度用和圆点、窄条同一个 urgencyOf，列表第一行就是圆点最急的那条。
+function byPinUrgencyDue(a, b) {
   if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+  const ua = urgencyOf(a);
+  const ub = urgencyOf(b);
+  if (ua !== ub) return ub - ua;
   const da = parseDue(a.due);
   const db = parseDue(b.due);
   const ta = da ? da.getTime() : Infinity;
@@ -413,7 +496,7 @@ function visibleTasks() {
   if (state.view === 'done') {
     arr.sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
   } else {
-    const pending = arr.filter((t) => !t.done).sort(byPinThenDue);
+    const pending = arr.filter((t) => !t.done).sort(byPinUrgencyDue);
     const done = arr.filter((t) => t.done)
       .sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
     arr = pending.concat(done);

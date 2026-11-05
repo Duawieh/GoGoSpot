@@ -26,7 +26,7 @@ void drawMark(Graphics& g, float cx, float cy, float box, Brush* brush) {
 static void progressOf(const Task& t, long long nowMs, long long& startMs, REAL& ratio);
 static void capsuleProgress(Graphics& g, const RectF& r, REAL t, Pen& pen);
 static Color fadeCol(const Color& c, REAL a);
-static Color progressColorOf(const Task& t, REAL ratio);
+static Color progressColorOf(const Task& t, REAL ratio, bool forBar = false);
 
 // 收起态的窄条：vis 是这一帧露出的宽度，整条左移 (full - vis)，以平滑展开效果呈现。
 // 两套外观，跟 Windows 的浅色/深色模式走：
@@ -159,7 +159,7 @@ static void paintPill(Graphics& g, REAL vis, REAL full) {
                 ratio *= anim;
                 if (ratio > 0.002f) {
                     // 和列表里的进度条同一套：按占比分绿 / 黄 / 红
-                    Color pc = progressColorOf(*t, ratio);
+                    Color pc = progressColorOf(*t, ratio, true);
                     Pen ringPen(Color(A(255), pc.GetR(), pc.GetG(), pc.GetB()), 2.6f);
                     ringPen.SetStartCap(LineCapRound);
                     ringPen.SetEndCap(LineCapRound);
@@ -300,7 +300,7 @@ static void paintDot(Graphics& g) {
             } else {
                 r2 *= anim;
                 if (r2 > 0.002f) {
-                    Color c2 = progressColorOf(*pt, r2);
+                    Color c2 = progressColorOf(*pt, r2, true);
                     Pen pen(Color((BYTE)(255 * g_dotRingA), c2.GetR(), c2.GetG(), c2.GetB()), 5.2f);
                     pen.SetStartCap(LineCapRound);
                     pen.SetEndCap(LineCapRound);
@@ -931,8 +931,12 @@ static void capsuleProgress(Graphics& g, const RectF& r, REAL t, Pen& pen) {
 // 进度条的颜色：<=60% 绿，<=80% 黄，再往上红。
 // 平时就是这三个纯色，只在跨过 60% / 80% 那两个点时放一段过渡动画，
 // 不是跟着进度一直渐变。
-static Color tierColor(int tier) {
-    return (tier == 0) ? pal().green : (tier == 1 ? pal().amber : pal().red);
+// forBar 取「条」上的颜色：日间的 amber 偏褐，画成细条或铺行底都不好看，
+// 换成提亮一档的 progAmber；文字仍然用 amber，白底上才够深。
+static Color tierColor(int tier, bool forBar) {
+    if (tier == 0) return pal().green;
+    if (tier == 1) return forBar ? pal().progAmber : pal().amber;
+    return pal().red;
 }
 
 static Color lerpColor(Color a, Color b, REAL k) {
@@ -946,7 +950,7 @@ static Color lerpColor(Color a, Color b, REAL k) {
 struct TierState { wchar_t id[40] = {0}; int tier = 0; int from = 0; DWORD at = 0; };
 static TierState g_tiers[12];
 
-static Color progressColorOf(const Task& t, REAL ratio) {
+static Color progressColorOf(const Task& t, REAL ratio, bool forBar) {
     int tier = (ratio <= 0.35f) ? 0 : (ratio <= 0.7f ? 1 : 2);
 
     TierState* slot = nullptr;
@@ -954,7 +958,7 @@ static Color progressColorOf(const Task& t, REAL ratio) {
         if (st.id[0] && t.id == st.id) { slot = &st; break; }
         if (!st.id[0] && !slot) slot = &st;
     }
-    if (!slot) return tierColor(tier);
+    if (!slot) return tierColor(tier, forBar);
 
     if (!slot->id[0]) {                       // 第一次见到这条
         wcsncpy(slot->id, t.id.c_str(), 39);
@@ -962,7 +966,7 @@ static Color progressColorOf(const Task& t, REAL ratio) {
         slot->tier = tier;
         slot->from = tier;
         slot->at = 0;
-        return tierColor(tier);
+        return tierColor(tier, forBar);
     }
 
     if (slot->tier != tier) {                 // 刚跨过阈值
@@ -974,9 +978,9 @@ static Color progressColorOf(const Task& t, REAL ratio) {
 
     if (slot->at) {
         REAL k = (REAL)(GetTickCount() - slot->at) / 360.0f;
-        if (k < 1.0f) return lerpColor(tierColor(slot->from), tierColor(slot->tier), k);
+        if (k < 1.0f) return lerpColor(tierColor(slot->from, forBar), tierColor(slot->tier, forBar), k);
     }
-    return tierColor(tier);
+    return tierColor(tier, forBar);
 }
 
 // 整行染色：底色随进度从左往右铺开，进行中时紧急底色让位。
@@ -1064,7 +1068,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
             // 没填预估：固定八成填充，颜色跟紧急程度走，不跟着时间变
             paintRowBar(g, rowR, 0.8f * anim, urgencyColor(u), alpha);
         } else {
-            paintRowBar(g, rowR, ratio * anim, progressColorOf(t, ratio), alpha);
+            paintRowBar(g, rowR, ratio * anim, progressColorOf(t, ratio, true), alpha);
         }
     }
 

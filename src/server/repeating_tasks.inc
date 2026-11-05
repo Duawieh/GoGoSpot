@@ -535,6 +535,7 @@ static Response apiSnooze(const string& id) {
 
         JVal* due = t.get("due");
         long long cur = (due && due->kind == JVal::Str) ? dueToUnixMs(due->str) : 0;
+        if (cur <= 0) return jsonError(400, "task has no due date");   // 没有截止时间就无从推迟
 
         // 老数据没有锚点：把推迟前的 due 记成锚点，下一期仍按原节奏走。
         // 已经有锚点的任务不动它，推迟只改 due。

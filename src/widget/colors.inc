@@ -27,6 +27,7 @@ struct Palette {
     Color amber;              // 近
     Color purple;             // 不紧急但快到期
     Color green;              // 进度前半段
+    Color progAmber;          // 进度条上的「近」：日间比 amber 亮一档，压在白底上不发褐
 
     // 圆点光环：日间要比 red/amber 更亮，深色环在亮底上会看成黑圈
     Color haloRed;
@@ -96,6 +97,7 @@ struct DayPalette : Palette {
         amber  = Color(255, 168, 92, 10);
         purple = Color(255, 124, 82, 216);
         green  = Color(255, 22, 163, 127);
+        progAmber = Color(255, 224, 158, 46);   // 接近圆点外圈的金色，再深一点才看得出进度
 
         haloRed   = Color(255, 240, 120, 138);
         haloAmber = Color(255, 246, 196, 92);
@@ -154,6 +156,7 @@ struct NightPalette : Palette {
         amber  = Color(255, 255, 189, 74);
         purple = Color(255, 178, 132, 255);
         green  = Color(255, 92, 206, 138);
+        progAmber = amber;                      // 夜间 amber 本身就够亮，不另取色
 
         haloRed   = red;
         haloAmber = amber;

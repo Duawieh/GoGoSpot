@@ -119,8 +119,9 @@ HWND widgetCreate(bool enabled) {
         if (progman) SetWindowLongPtrW(g_hwnd, GWLP_HWNDPARENT, (LONG_PTR)progman);
     }
 
-    // 不预置全屏基线：第一轮守护会把「启动时已经在全屏」当作刚切进全屏并隐藏。
-    // 最大化窗口在 fullscreenAppInFront 里已被排除，不会因此误藏。
+    // 不预置全屏基线：第一轮守护按真实情况判断，前台确实是全屏就先藏起来，
+    // 免得刚启动就压在视频上。启动时看不见的问题由创建后的 Z 序刷新解决。
+    g_fsPrev = false;
 
     g_widgetOn = enabled;
     if (enabled) {
@@ -137,6 +138,9 @@ HWND widgetCreate(bool enabled) {
         // 创建阶段直接调 applyTopmost 加不上 WS_EX_TOPMOST（实测：同样的调用走消息就生效），
         // 所以投一条消息，等消息循环起来再补一次
         if (g_topmost) PostMessageW(g_hwnd, WM_APP_TOPMOST, 1, 0);
+        // 不管置顶与否都补一条：置顶模式走一遍「取消 → 置顶」，
+        // 普通模式的窗口挂在桌面上，不主动提一次会停在所有窗口后面
+        PostMessageW(g_hwnd, WM_APP_TOPMOST_REFRESH, 0, 0);
     } else {
         ShowWindow(g_hwnd, SW_HIDE);
     }

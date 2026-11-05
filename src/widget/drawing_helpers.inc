@@ -161,6 +161,24 @@ static Urgency urgencyOf(const Task& t) {
     return URG_NONE;
 }
 
+// 列表顺序：置顶最前，其次按紧急程度（红 → 黄 → 普通），再按到期时间，没截止的垫底。
+// 用的是和圆点外圈、窄条同一个 urgencyOf，最急的一条一定排在展开列表的第一行。
+// 必须在 rebuildWorkload 之后调用：黄线依赖整份任务的累计负载。
+static void sortByUrgency() {
+    std::stable_sort(g_tasks.begin(), g_tasks.end(), [](const Task& a, const Task& b) {
+        if (a.pinned != b.pinned) return a.pinned;
+
+        Urgency ua = urgencyOf(a);
+        Urgency ub = urgencyOf(b);
+        if (ua != ub) return ua > ub;
+
+        if (a.dueMs == 0 && b.dueMs == 0) return false;
+        if (a.dueMs == 0) return false;
+        if (b.dueMs == 0) return true;
+        return a.dueMs < b.dueMs;
+    });
+}
+
 // 紧急程度对应的颜色：进度染色、窄条、正在进行按钮都用它，红黄紫三档一一对上
 static Color urgencyColor(Urgency u) {
     return (u == URG_RED) ? pal().red : (u == URG_YELLOW ? pal().amber : pal().purple);
@@ -183,22 +201,32 @@ static void progressOf(const Task& t, long long nowMs, long long& startMs, REAL&
 
 // 窄条和圆点环上显示哪条：
 //   1. 红色任务中优先“已经在做”的一条（多条时比较进度）；均未进行时按截止时间最近
-//   2. 不存在红色任务时，显示进度占比最高的任务
-//   3. 一条都没在进行 → 退回最早结束的那条
+//   2. 没有红色时显示黄色任务，同样优先在做的
+//   3. 都不紧急 → 显示进度占比最高的进行中任务
+//   4. 一条都没在进行 → 退回最早结束的那条
+//
+// 第 2 步不能省：圆点外圈画的是全局最急的那一档（worstUrgency），
+// 窄条若按“进度最高”挑，就会出现圈是黄的、窄条里却是一条紫任务。
 static const Task* pillTask() {
     const Task* redRunning = nullptr;    // 红色的、且在进行的
     const Task* redAny = nullptr;        // 红色的（按 ddl）
-    const Task* mostDone = nullptr;      // 不分颜色，进度最多
+    const Task* amberRunning = nullptr;  // 黄色的、且在进行的
+    const Task* amberAny = nullptr;      // 黄色的（按 ddl）
+    const Task* mostDone = nullptr;      // 都不紧急时，进度最多
     const Task* nearest = nullptr;       // 最早结束
     REAL bestRedRatio = -1.0f;
+    REAL bestAmberRatio = -1.0f;
     REAL bestRatio = -1.0f;
 
     for (size_t i = 0; i < g_tasks.size(); ++i) {
         const Task& t = g_tasks[i];
         if (!g_justDone.empty() && t.id == g_justDone) continue;   // 刚完成的任务暂不显示
 
-        bool isRed = (urgencyOf(t) == URG_RED);
+        const Urgency u = urgencyOf(t);
+        const bool isRed = (u == URG_RED);
+        const bool isAmber = (u == URG_YELLOW);
         if (isRed && (!redAny || t.dueMs < redAny->dueMs)) redAny = &t;
+        if (isAmber && (!amberAny || t.dueMs < amberAny->dueMs)) amberAny = &t;
 
         if (t.startedAt > 0) {
             long long st = 0;
@@ -209,6 +237,11 @@ static const Task* pillTask() {
                           (r == bestRedRatio && redRunning && t.dueMs < redRunning->dueMs))) {
                 bestRedRatio = r;
                 redRunning = &t;
+            }
+            if (isAmber && (r > bestAmberRatio ||
+                            (r == bestAmberRatio && amberRunning && t.dueMs < amberRunning->dueMs))) {
+                bestAmberRatio = r;
+                amberRunning = &t;
             }
             if (r > bestRatio || (r == bestRatio && mostDone && t.dueMs < mostDone->dueMs)) {
                 bestRatio = r;
@@ -223,6 +256,8 @@ static const Task* pillTask() {
 
     if (redRunning) return redRunning;
     if (redAny) return redAny;
+    if (amberRunning) return amberRunning;
+    if (amberAny) return amberAny;
     if (mostDone) return mostDone;
     return nearest;
 }
