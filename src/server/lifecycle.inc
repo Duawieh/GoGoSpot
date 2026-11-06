@@ -141,6 +141,15 @@ int serverStart(int argc, char** argv) {
         }
     }).detach();
 
+    // 每分钟看一次自动备份的时刻到了没（每天 10:00 / 16:00 / 22:00）；
+    // 启动后先补一轮，关机期间错过的就补在这里
+    std::thread([]() {
+        for (;;) {
+            sweepAutoBackup();
+            Sleep(60000);
+        }
+    }).detach();
+
     // accept 循环交给后台线程，主线程留给窗口和托盘
     g_listener = listener;
     std::thread([]() {

@@ -162,7 +162,7 @@ static void startEdit() {
     g_editText.clear();
     g_caret = 0;
     g_editDue = 4;                           // 默认不设截止
-    g_editEst = 1;                           // 默认 1 小时，不再提供「不设」
+    g_editEst = 1;                           // 默认 1 小时，最后一格可以选「不设」
     g_customDue.clear();
     g_pickingDate = false;
     g_pickingEst = false;
@@ -225,7 +225,7 @@ static void restoreEdit() {
     g_customDue = g_draft.customDue;
     g_editUrl = g_draft.url;
     g_editDue = g_draft.due;
-    g_editEst = (g_draft.est >= 0 && g_draft.est < EST_CHIPS) ? g_draft.est : 1;
+    g_editEst = (g_draft.est >= -1 && g_draft.est < EST_CHIPS) ? g_draft.est : 1;
     g_caret = g_draft.caret;
     g_editLinks = g_draft.links;
 }
@@ -267,10 +267,10 @@ static void finishEdit(bool commit, bool keepDraft) {
                 }
                 path += L"&links=" + lk;
             }
-            int estMin = 60;                     // 没选过也按 1 小时，不再允许空预估
+            int estMin = 0;                      // 0 = 不设，只当提醒
             if (g_editEst >= 0 && g_editEst < EST_CUSTOM) estMin = EST_MIN[g_editEst];
             else if (g_editEst == EST_CUSTOM)             estMin = g_editEstCustom;
-            if (estMin <= 0) estMin = 60;
+            if (estMin < 0) estMin = 0;
             path += L"&estimate=" + std::to_wstring(estMin);
             string body;
             httpRequest(L"POST", path, body);
@@ -1074,6 +1074,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     } else {                                 // 预估那一排
                         int i = chip - 100;
                         if (i == EST_CUSTOM) openEstPicker();
+                        else if (i == EST_CHIPS - 1) g_editEst = -1;   // 不设
                         else g_editEst = i;
                     }
                     InvalidateRect(h, nullptr, FALSE);
@@ -1165,9 +1166,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 // 没有截止日期的任务推不了：硬推会给它凭空造一个明天到期
                 if (g_tasks[idx].dueMs > 0) items[n++] = { L"推迟一天", 10, false };
                 items[n++] = { L"删除任务", 11, true };
-                items[n++] = { L"打开控制台", 1, false };
+                items[n++] = { L"打开控制台页面", 1, false };
             } else {
-                items[n++] = { L"打开控制台", 1, false };
+                items[n++] = { L"打开控制台页面", 1, false };
                 items[n++] = { L"添加任务", 2, true };
                 items[n++] = { L"刷新", 4, true };
                 items[n++] = { L"关闭悬浮清单", 5, false };

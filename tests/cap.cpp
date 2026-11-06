@@ -24,18 +24,34 @@ static int pngClsid(CLSID* clsid) {
     return -1;
 }
 
-struct FindCtx { const wchar_t* want; HWND found; };
+struct FindCtx { const wchar_t* want; const wchar_t* cls; DWORD pid; HWND found; };
 
+// want 为空串表示不看标题；pid 为 0 表示不挑进程。
+// 多个实例同时开着、或者要抓没有标题的菜单窗口时，靠这两个条件锁定目标。
 static BOOL CALLBACK enumProc(HWND h, LPARAM p) {
     wchar_t title[256] = {0};
     GetWindowTextW(h, title, 255);
     FindCtx* c = (FindCtx*)p;
-    if (wcsstr(title, c->want)) { c->found = h; return FALSE; }
-    return TRUE;
+    if (c->want[0] && !wcsstr(title, c->want)) return TRUE;
+    if (c->cls && c->cls[0]) {
+        wchar_t cls[128] = {0};
+        GetClassNameW(h, cls, 127);
+        if (wcscmp(cls, c->cls) != 0) return TRUE;
+    }
+    if (c->pid) {
+        DWORD owner = 0;
+        GetWindowThreadProcessId(h, &owner);
+        if (owner != c->pid) return TRUE;
+    }
+    c->found = h;
+    return FALSE;
 }
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 3) { wprintf(L"用法: cap.exe <标题片段> <输出.png> [消息号] [等待毫秒]\n"); return 2; }
+    if (argc < 3) {
+        wprintf(L"用法: cap.exe <标题片段> <输出.png> [消息号] [等待毫秒] [缩放] [抄屏幕] [pid] [窗口类]\n");
+        return 2;
+    }
 
     // 不声明 DPI 感知的话，GetWindowRect 拿到的是虚拟化后的尺寸，右边会被裁掉
     typedef BOOL (WINAPI *SetCtxFn)(HANDLE);
@@ -47,7 +63,8 @@ int wmain(int argc, wchar_t** argv) {
     ULONG_PTR token = 0;
     GdiplusStartup(&token, &in, nullptr);
 
-    FindCtx c{argv[1], nullptr};
+    DWORD wantPid = (argc >= 8) ? (DWORD)_wtoi(argv[7]) : 0;
+    FindCtx c{argv[1], (argc >= 9) ? argv[8] : L"", wantPid, nullptr};
     EnumWindows(enumProc, (LPARAM)&c);
     if (!c.found) { wprintf(L"没找到窗口\n"); return 1; }
 

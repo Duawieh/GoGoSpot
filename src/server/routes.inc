@@ -249,19 +249,21 @@ static Response apiTasks(const string& method, const string& body) {
         }
 
         ensureDir(gDataDir);
-        string backup = makeBackupLocked();
         if (!writeFileAtomic(gDataFile, payload)) return jsonError(500, "write failed");
 
-        string extra = "\"savedAt\":\"" + isoNow() + "\",\"bytes\":" + std::to_string(payload.size());
-        if (!backup.empty()) extra += ",\"backup\":\"" + backup + "\"";
-        return jsonOk(extra);
+        // 不再每次覆盖都备份，交给定时任务和控制台的「清空已完成」
+        return jsonOk("\"savedAt\":\"" + isoNow() + "\",\"bytes\":" + std::to_string(payload.size()));
     }
 
     return jsonError(405, "method not allowed");
 }
 
-static Response apiBackup() {
+// cooldown 为真时按删除的冷却规则来：一分钟内已经备过就跳过，避免连删留下十几份
+static Response apiBackup(bool cooldown) {
     std::lock_guard<std::mutex> lk(gDataMutex);
+    if (cooldown && nowUnixMs() - gLastBackupMs < BACKUP_COOLDOWN_MS) {
+        return jsonOk("\"skipped\":true");
+    }
     string name = makeBackupLocked();
     if (name.empty()) return jsonError(400, "还没有可备份的数据文件");
     return jsonOk("\"backup\":\"" + name + "\"");
@@ -511,8 +513,10 @@ static Response apiWidget() {
             rows += '\t';
             rows += '0';
             rows += '\t';
+            // 小数分钟向上取整；0 原样传下去，悬浮清单靠它区分「不设」。
+            // 负数当 0：手改数据或第三方客户端可能塞进负值，别让它漏到界面上
             long long estMin = (est && est->kind == JVal::Num) ? (long long)std::ceil(est->num) : 0;
-            if (estMin <= 0) estMin = 60;             // 小数分钟向上取整；没填预估按 1 小时
+            if (estMin < 0) estMin = 0;
             rows += std::to_string(estMin);
             rows += '\t';
 

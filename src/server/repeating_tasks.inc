@@ -581,6 +581,8 @@ static Response apiRemove(const string& id) {
         JVal* tid = t.get("id");
         if (!tid || tid->kind != JVal::Str || tid->str != id) continue;
 
+        // 删除是破坏性操作；连着删只留第一份，靠一分钟冷却压掉后面的
+        backupIfIdle();
         tasks->arr.erase(tasks->arr.begin() + (long)i);
         if (!saveTasksRoot(root)) return jsonError(500, "write failed");
         return jsonOk("\"removed\":true");
@@ -690,7 +692,7 @@ static Response handleApi(const string& method, const string& path,
         auto it = q.find("id");
         return apiRemove(it == q.end() ? string() : it->second);
     }
-    if (path == "/api/backup")   return apiBackup();
+    if (path == "/api/backup")   return apiBackup(q.find("cooldown") != q.end());
     if (path == "/api/backups")  return apiBackups();
     if (path == "/api/restore") {
         auto it = q.find("name");

@@ -72,50 +72,61 @@ static long long nowMs() {
 enum Urgency {
     URG_NONE   = 0,
     URG_YELLOW = 1,     // 剩余时间进入负载黄线
-    URG_RED    = 2      // <= min(预估, 12h)
+    URG_RED    = 2      // <= min(预估 + 30min, 12h)
 };
 
-// 红线跟着预估走，但最多提前 12 小时。
 // ---- 负载模型 ----
 //
 // 单看一条任务算不出「今天做不做得完」：100 条各 1 小时、明天一起到期，
 // 每条单独看都不急，合起来要 100 小时。
 //
-// 所以先按截止时刻把预估聚成一档（一次遍历建 map），再按时间升序求前缀和
-// （第二遍走 map）。前缀和就是「到这一档为止总共要花多少时间」，
-// 黄线由它乘系数得到，红线和原来一样按单条任务算。
+// 按截止时刻聚成若干档，三遍走：
+//   一、建 map：同一截止时刻的有效预估求和，同时记下这一档最长的红色线
+//   二、按时间升序求前缀和，得到每档的黄线
+//   三、按时间倒序把更晚那一档的等级往回带：后面的活都急了，前面更早到期的只会更急
 //
 // 两个单位约定：
 //   · 预估 ≥ 24h 的任务，认为用户已经把睡觉吃饭算进去了，累计时按一半计
 //   · 前缀 < 12h 说明一口气能做完，系数 1.0；否则按 2.0（日历时间大约是工作量的两倍）
 //   两者相乘，长任务的 0.5 会被系数 2.0 还原，正好对上用户填的原始时长。
-//   黄线最低 12h：短任务也要提前半天亮，不能拖到最后一小时。
+//   黄线最低 16h：前一天 16:00 就能看到次日 08:00 到期的任务。
 
 struct DueBucket {
     long long due;        // 截止时刻
     long long prefix;     // 到这一档为止的累计（长任务已减半）
+    long long redLine;    // 这一档里最长的红色线：max(min(预估, 12h))
+    int       tier;       // 第三次遍历定下的等级：0 普通 / 1 黄 / 2 红
 };
 
 static std::vector<DueBucket> g_buckets;
 
 static const long long EST_LONG_MS = 24LL * 3600000LL;   // 到这个时长视为已含休息
 static const long long DAY_CAP_MS  = 12LL * 3600000LL;   // 一口气能做完的上限
+// 黄线的最低提前量。取 16 小时：前一天 16:00 下班前就能看到次日 08:00 到期的任务
+static const long long URG_YELLOW_FLOOR_MS = 16LL * 3600000LL;
+// 红线在预估之外多给半小时：卡着点才开始，一点缓冲都没有
+static const long long URG_RED_GRACE_MS = 30LL * 60000LL;
 
 // 任务数据变了就重算一次，绘制时只查表
 static void rebuildWorkload() {
     g_buckets.clear();
 
-    std::map<long long, long long> byDue;   // 截止时刻 → 预估和（长任务已减半）
+    std::map<long long, long long> byDue;     // 截止时刻 → 有效预估和（长任务已减半）
+    std::map<long long, long long> redByDue;  // 截止时刻 → 最长的红色线
     for (size_t i = 0; i < g_tasks.size(); ++i) {
         const Task& t = g_tasks[i];
         if (t.dueMs <= 0) continue;                          // 没截止时间排不进去
 
         long long est = (long long)t.estimate * 60000LL;
         if (est <= 0) est = 3600000LL;                       // 没填预估按 1 小时
+        long long red = est + URG_RED_GRACE_MS;
+        if (red > URG_RED_CAP_MS) red = URG_RED_CAP_MS;
+        if (red > redByDue[t.dueMs]) redByDue[t.dueMs] = red;
         if (est >= EST_LONG_MS) est /= 2;
         byDue[t.dueMs] += est;
     }
 
+    // 第二遍：升序求前缀和，黄线由前缀乘系数得到
     long long cum = 0;
     g_buckets.reserve(byDue.size());
     for (std::map<long long, long long>::const_iterator it = byDue.begin();
@@ -124,41 +135,44 @@ static void rebuildWorkload() {
         DueBucket b;
         b.due = it->first;
         b.prefix = cum;
+        b.redLine = redByDue[it->first];
+        b.tier = 0;
         g_buckets.push_back(b);
+    }
+
+    // 第三遍：倒序把更晚那一档的等级往回带。
+    // 不这么传会出现「两天的活已经标红，明天到期的五分钟任务还是普通」这种反直觉结果：
+    // 更早到期的任务不可能比更晚到期的更闲。
+    long long now = nowMs();
+    int carry = 0;
+    for (int i = (int)g_buckets.size() - 1; i >= 0; --i) {
+        DueBucket& b = g_buckets[i];
+        long long line = b.prefix * (b.prefix >= DAY_CAP_MS ? 2 : 1);
+        if (line < URG_YELLOW_FLOOR_MS) line = URG_YELLOW_FLOOR_MS;
+
+        long long remain = b.due - now;
+        int tier = 0;
+        if (remain <= 0 || remain <= b.redLine) tier = 2;
+        else if (remain <= line) tier = 1;
+
+        if (carry > tier) tier = carry;      // 更晚的那档更急，这一档跟着急
+        b.tier = tier;
+        carry = tier;
     }
 }
 
-// 这条任务的黄线：它所在那一档的前缀 × 系数，最低 12 小时
-static long long yellowLineOf(const Task& t) {
+// 这条任务的等级：第三次遍历已经按截止时刻定好，这里只查表
+static Urgency urgencyOf(const Task& t) {
+    if (t.dueMs <= 0) return URG_NONE;
+
     size_t lo = 0, hi = g_buckets.size();
     while (lo < hi) {                                        // 按截止时刻二分
         size_t mid = lo + (hi - lo) / 2;
         if (g_buckets[mid].due < t.dueMs) lo = mid + 1;
         else hi = mid;
     }
-    if (lo >= g_buckets.size() || g_buckets[lo].due != t.dueMs) return 0;
-
-    const DueBucket& b = g_buckets[lo];
-    // 前缀够满 12 小时说明一天做不完，按日历时间算；否则一口气能做完
-    long long line = b.prefix * (b.prefix >= DAY_CAP_MS ? 2 : 1);
-    return (line < DAY_CAP_MS) ? DAY_CAP_MS : line;
-}
-
-static Urgency urgencyOf(const Task& t) {
-    if (t.dueMs <= 0) return URG_NONE;
-
-    long long remain = t.dueMs - nowMs();
-    if (remain <= 0) return URG_RED;          // 已经逾期，直接最高级
-
-    // 红色只跟这条任务自己有关：预估多久、还剩多久。没填预估按 1 小时
-    long long est = (long long)t.estimate * 60000LL;
-    if (est <= 0) est = 3600000LL;
-    long long redLine = (est < URG_RED_CAP_MS) ? est : URG_RED_CAP_MS;
-    if (remain <= redLine) return URG_RED;
-
-    // 黄色看整条时间线的负载：前面的任务也会挤占这一档的时间
-    if (remain <= yellowLineOf(t)) return URG_YELLOW;
-    return URG_NONE;
+    if (lo >= g_buckets.size() || g_buckets[lo].due != t.dueMs) return URG_NONE;
+    return (Urgency)g_buckets[lo].tier;
 }
 
 // 列表顺序：置顶最前，其次按紧急程度（红 → 黄 → 普通），再按到期时间，没截止的垫底。

@@ -106,7 +106,7 @@ static void showTrayMenu() {
 
     MenuItemDef items[5];
     int n = 0;
-    items[n++] = { L"打开控制台", 1, true };
+    items[n++] = { L"打开控制台页面", 1, true };
     items[n++] = { on ? L"关闭悬浮清单" : L"启用悬浮清单", 3, false };
     items[n++] = { topmost ? L"悬浮清单取消置顶" : L"悬浮清单置顶", 4, true };
     items[n++] = { L"退出", 2, false };
@@ -293,6 +293,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     if (g_trayWnd) DestroyWindow(g_trayWnd);
     if (g_icon && g_icon != LoadIconW(nullptr, MAKEINTRESOURCEW(32512))) DestroyIcon(g_icon);
 
+    serverBackupOnExit();                       // 关之前留一份，这次会话改过才备
     serverStop();
     CoUninitialize();
     GdiplusShutdown(token);

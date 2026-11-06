@@ -574,11 +574,11 @@ static void paintEditPanel(Graphics& g) {
         }
     }
 
-    // 预估。-1 视为 1 小时，自定义落在“自定义”那一格
+    // 预估。-1 落在“不设”那一格，自定义落在“自定义”那一格
     drawText(g, L"预估", smallFont(),
              RectF((REAL)SHADOW + 10, (REAL)SHADOW + panelEstTop(), 30, (REAL)CHIP_H),
              pal().textFaint, true, 0);
-    int onEst = (g_editEst < 0) ? 1
+    int onEst = (g_editEst < 0) ? (EST_CHIPS - 1)
               : (g_editEst == EST_CUSTOM ? EST_CUSTOM : g_editEst);
     for (int i = 0; i < EST_CHIPS; ++i) {
         RectF r = chipRect(1, i, EST_CHIPS);
@@ -1337,7 +1337,7 @@ static void paint(HDC dc) {
         REAL midY = (REAL)(SHADOW + LIST_TOP + (LIST_BOTTOM - LIST_TOP) / 2 - 30);
         drawText(g, L"无法读取任务数据", bodyFont(),
                  RectF((REAL)SHADOW, midY, (REAL)CARD_W, 26), pal().red, true, 1);
-        drawText(g, L"可在控制台中从历史备份恢复", smallFont(),
+        drawText(g, L"可在控制台页面中从历史备份恢复", smallFont(),
                  RectF((REAL)SHADOW, midY + 26, (REAL)CARD_W, 22), pal().textFaint, true, 1);
     } else if (g_tasks.empty()) {
         REAL midY = (REAL)(SHADOW + LIST_TOP + (LIST_BOTTOM - LIST_TOP) / 2 - 30);
@@ -1434,7 +1434,7 @@ static void paint(HDC dc) {
         drawText(g, L"添加任务", bodyFont(),
                  RectF(addR.X + 26, addR.Y, addR.Width - 26, addR.Height), pal().textDim, true, 0);
 
-        drawText(g, L"打开控制台", smallFont(),
+        drawText(g, L"打开控制台页面", smallFont(),
                  RectF(openR.X, openR.Y, openR.Width - 10, openR.Height), pal().textFaint, true, 2);
     }
 }

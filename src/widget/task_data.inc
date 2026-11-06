@@ -55,8 +55,7 @@ static bool fetchTasks() {
 
         Task t;
         t.id = u8tow(f[0]);
-        t.estimate = atoi(f[2].c_str());
-        if (t.estimate <= 0) t.estimate = 60;   // 旧数据没填预估的按 1 小时显示
+        t.estimate = atoi(f[2].c_str());        // 0 = 不设预估，进度走紫色呼吸环
         t.dueMs = _strtoi64(f[3].c_str(), nullptr, 10);
         t.title = u8tow(f[4]);
         if (f.size() >= 7) t.startedAt = _strtoi64(f[6].c_str(), nullptr, 10);

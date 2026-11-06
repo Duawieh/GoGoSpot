@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>GoGoSpot 控制台</title>
+<title>GoGoSpot 控制台页面</title>
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="stylesheet" href="style.css">
@@ -103,7 +103,7 @@
 
     <div class="composer-meta" id="composerMeta">
       <div class="meta-field meta-est" id="estField"
-           title="预估时长：输入数字，滚轮或点击切换单位">
+           title="预估时长：输入数字，滚轮或点击切换单位；留空表示不设">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
           <circle cx="12" cy="12" r="8.2" stroke="currentColor" stroke-width="1.6"/>
           <path d="M12 7.4V12l3.1 1.9" stroke="currentColor" stroke-width="1.6"
@@ -111,7 +111,7 @@
         </svg>
         <input id="estInput" class="est-input" type="text" inputmode="decimal"
                autocomplete="off" spellcheck="false"
-               aria-label="预估时长，输入数字后选择单位" placeholder="预估时长">
+               aria-label="预估时长，输入数字后选择单位；留空表示不设" placeholder="不设">
         <button type="button" class="est-unit-btn" id="estUnitBtn" tabindex="-1" hidden
                 title="滚轮或点击切换单位（日 / 时 / 分）">分</button>
       </div>

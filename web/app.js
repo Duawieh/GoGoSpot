@@ -80,7 +80,7 @@ const state = {
   systemLight: null,        // 后台读到的 AppsUseLightTheme，跟随系统时以它为准
   tasks: [],
   view: 'all',
-  estimate: 60,             // 新建任务默认 1 小时，不再允许空预估
+  estimate: 60,             // 新建任务默认 1 小时；清空就是不设预估
   workload: null,           // 截止时刻 → 黄色线（毫秒），render 时重算
   baseTasks: [],            // 上次与服务端同步的副本，保存前做三方合并
   dueDate: '',
@@ -131,30 +131,61 @@ function parseDue(due) {
   return isNaN(dt.getTime()) ? null : dt;
 }
 
-// 紧急分级，和悬浮清单 drawing_helpers.inc 同一套负载模型：
-// 按截止时刻聚合预估，前缀和 × 系数得到黄线；黄线最低 12h。
-// 红色仍只看单条任务：min(预估, 12h)，没填预估按 1 小时。
+// 紧急分级，和悬浮清单 drawing_helpers.inc 同一套负载模型：按截止时刻聚成若干档，
+// 三遍走 —— 建 map、升序求前缀和得黄线、倒序把更晚那一档的等级往回带。
+// 第三遍是为了让等级沿截止时间单调：后面的活都红了，前面更早到期的不可能还是普通。
 function buildWorkload() {
-  const byDue = new Map();
+  const byDue = new Map();                 // 截止时刻 → { est: 有效预估和, red: 最长红线 }
   for (const t of state.tasks) {
     if (!t || t.done || !t.due) continue;
     const dt = parseDue(t.due);
     if (!dt) continue;
     let est = (Number(t.estimate) || 0) * 60000;
     if (est <= 0) est = 3600000;                 // 没填预估按 1 小时
-    if (est >= 24 * 3600000) est /= 2;           // 长任务认为已含休息
+
+    const red = Math.min(est + 30 * 60000, 12 * 3600000);  // 预估之外多给半小时缓冲
     const key = dt.getTime();
-    byDue.set(key, (byDue.get(key) || 0) + est);
+    let slot = byDue.get(key);
+    if (!slot) { slot = { est: 0, red: 0 }; byDue.set(key, slot); }
+    if (red > slot.red) slot.red = red;
+
+    if (est >= 24 * 3600000) est /= 2;           // 长任务认为已含休息
+    slot.est += est;
   }
 
   const buckets = new Map();
   let cum = 0;
   for (const key of [...byDue.keys()].sort((a, b) => a - b)) {
-    cum += byDue.get(key);
-    const line = Math.max(cum * (cum >= 12 * 3600000 ? 2 : 1), 12 * 3600000);
-    buckets.set(key, line);
+    const slot = byDue.get(key);
+    cum += slot.est;
+    // 最低提前 16 小时：前一天 16:00 就能看到次日 08:00 到期的任务
+    buckets.set(key, {
+      line: Math.max(cum * (cum >= 12 * 3600000 ? 2 : 1), 16 * 3600000),
+      red: slot.red,
+      tier: 0,
+    });
   }
   state.workload = buckets;
+  refreshTiers();
+}
+
+// 第三次遍历：从最晚截止的那档往回走，碰到的等级只会越来越高。
+// 单独抽出来是因为它便宜（O(n)），每秒刷新进度时也要重跑，不然等级会停在上一帧。
+function refreshTiers() {
+  if (!state.workload) return;
+  const keys = [...state.workload.keys()].sort((a, b) => a - b);
+  const now = Date.now();
+  let carry = 0;
+  for (let i = keys.length - 1; i >= 0; --i) {
+    const b = state.workload.get(keys[i]);
+    const remain = keys[i] - now;
+    let tier = 0;
+    if (remain <= 0 || remain <= b.red) tier = 2;
+    else if (remain <= b.line) tier = 1;
+    if (carry > tier) tier = carry;
+    b.tier = tier;
+    carry = tier;
+  }
 }
 
 function ensureWorkload() {
@@ -165,17 +196,9 @@ function urgencyOf(t) {
   if (!t.due || t.done) return 0;
   const dt = parseDue(t.due);
   if (!dt) return 0;
-  const remain = dt.getTime() - Date.now();
-  if (remain <= 0) return 2;
-
-  const estMin = (Number(t.estimate) || 0) > 0 ? Number(t.estimate) : 60;
-  const redLine = Math.min(estMin * 60000, 12 * 3600000);
-  if (remain <= redLine) return 2;
-
   ensureWorkload();
-  const line = state.workload.get(dt.getTime()) || 0;
-  if (remain <= line) return 1;
-  return 0;
+  const b = state.workload.get(dt.getTime());
+  return b ? b.tier : 0;
 }
 
 function dueInfo(due) {
@@ -251,7 +274,7 @@ function normalize(t) {
     done: !!src.done,
     estimate: Number.isFinite(Number(src.estimate)) && Number(src.estimate) > 0
       ? Math.min(Math.round(Number(src.estimate) * 60) / 60, EST_MAX)
-      : 60,                     // 不再有无预估状态，旧数据按 1 小时算
+      : 0,                      // 0 = 不设预估，只当提醒用；算紧急度时才按 1 小时算
     due,
     tags: Array.isArray(src.tags) ? src.tags.filter((x) => typeof x === 'string').slice(0, 6) : [],
     links: Array.isArray(src.links)
@@ -583,7 +606,9 @@ function taskHTML(t) {
   const urgCls = urg === 2 ? ' urgent' : (urg === 1 ? ' urgent-y' : '');
   const id = esc(t.id);
   const meta = [];
-  if (t.estimate) meta.push(`<span class="m-est">约 ${esc(fmtDuration(t.estimate))}</span>`);
+  meta.push(t.estimate
+    ? `<span class="m-est">约 ${esc(fmtDuration(t.estimate))}</span>`
+    : '<span class="m-est">不限时</span>');
   if (di) meta.push(`<span class="m-due ${di.cls}">${esc(di.text)}</span>`);
   if (t.repeat) meta.push(`<span class="m-rep">${esc(repeatLabel(t.repeat))}</span>`);
   for (const tag of t.tags) meta.push(`<span class="m-tag">${esc(tag)}</span>`);
@@ -714,7 +739,8 @@ function render() {
   ).join('');
 
   // 底栏
-  const loadMin = all.filter((t) => !t.done && t.estimate).reduce((s, t) => s + t.estimate, 0);
+  // 不设预估的任务按 1 小时计入总负载，和紧急度用同一套兜底
+  const loadMin = all.filter((t) => !t.done).reduce((s, t) => s + (t.estimate || 60), 0);
   const loadText = loadMin ? `（预计 ${fmtDuration(loadMin)}）` : '';
   el.footerLeft.textContent = total === 0
     ? '共 0 项'
@@ -1078,7 +1104,7 @@ function addTask() {
   const t = normalize({
     id: uid(),
     title,
-    estimate: state.estimate || 60,          // 不再允许空预估
+    estimate: state.estimate,                // 0 = 不设预估
     due: state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null,
     tags: parseTags(el.tagInput.value),
     links: state.links.slice(),
@@ -1144,7 +1170,9 @@ function deleteTask(id) {
   const removed = state.tasks[idx];
 
   const node = el.list.querySelector(`.task[data-id="${CSS.escape(id)}"]`);
-  const finish = () => {
+  const finish = async () => {
+    // 连着删只留一份：后台按一分钟冷却自己判断要不要真备
+    try { await fetch('/api/backup?cooldown=1', { method: 'POST' }); } catch (e) { /* 备份失败也照常删 */ }
     state.tasks.splice(idx, 1);
     render();
     scheduleSave();
@@ -1164,10 +1192,12 @@ function deleteTask(id) {
   });
 }
 
-function clearDone() {
-  const snapshot = state.tasks.slice();
+async function clearDone() {
   const count = state.tasks.filter((t) => t.done).length;
   if (!count) return;
+  const snapshot = state.tasks.slice();
+  // 清空是唯一会真删数据的日常操作，先让后台留一份再改
+  try { await fetch('/api/backup', { method: 'POST' }); } catch (e) { /* 备份失败也照常清 */ }
   state.tasks = state.tasks.filter((t) => !t.done);
   render();
   scheduleSave();
@@ -1207,7 +1237,7 @@ function openTaskEditor(id) {
   state.dueDate = due ? due.slice(0, 10) : '';
   state.dueTime = due.length >= 16 ? due.slice(11, 16) : '23:59';
   state.links = (t.links || []).map(normalizeLink).filter(Boolean);
-  state.estimate = Number(t.estimate) > 0 ? Number(t.estimate) : 60;
+  state.estimate = Number(t.estimate) > 0 ? Number(t.estimate) : 0;
   estUnit = state.estimate && state.estimate % 1440 === 0 ? 0
           : (state.estimate && state.estimate % 60 === 0 ? 1 : 2);
   estRaw = state.estimate ? String(trimNum(state.estimate / EST_UNITS[estUnit].min)) : '';
@@ -1244,7 +1274,7 @@ function closeTaskEditor() {
     state.dueDate = d.dueDate;
     state.dueTime = d.dueTime;
     state.links = d.links;
-    state.estimate = d.estimate || 60;
+    state.estimate = d.estimate || 0;
     estRaw = d.estRaw;
     estUnit = d.estUnit;
     // 输入框是弹窗和输入区共用的，不清空的话弹窗里敲的网址会留在「添加任务」那一栏
@@ -1287,7 +1317,7 @@ function saveTaskEditor() {
 
   t.title = title.slice(0, 500);
   t.due = state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null;
-  t.estimate = state.estimate || 60;
+  t.estimate = state.estimate || 0;
   t.links = state.links.slice();
 
   closeTaskEditor();
@@ -1447,6 +1477,7 @@ async function toggleSetting(key, node, onMsg, offMsg) {
 
 // 每秒更新进行中任务的进度环，无需重绘任务列表
 setInterval(() => {
+  refreshTiers();                  // 等级随剩余时间变，别停在上一帧
   document.querySelectorAll('[data-bar]').forEach((node) => {
     const t = state.tasks.find((x) => x.id === node.dataset.bar);
     if (!t || !t.startedAt) return;
@@ -1483,7 +1514,7 @@ async function refreshBackups() {
     const list = data.backups || [];
     el.backupCount.textContent = list.length ? `${list.length} 份` : '';
     if (!list.length) {
-      el.backupList.innerHTML = '<div class="backup-empty">暂无备份；任务变更后将自动创建</div>';
+      el.backupList.innerHTML = '<div class="backup-empty">暂无备份；每天自动备份两次，清空已完成时也会留一份</div>';
       return;
     }
     el.backupList.innerHTML = list.map((b) => `

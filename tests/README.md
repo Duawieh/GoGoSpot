@@ -16,14 +16,24 @@ python tests/verify-fixes.py     # 逐条对应修复报告里的 P0 / P1
 python tests/api_test.py
 python tests/api_test2.py
 python tests/boundary_test.py    # 边界值、锚点、主题三档，写死 8770
+python tests/estimate_test.py    # 预估「不设」：0 原样透传、往返、重复派生
+python tests/backup_test.py      # 备份策略：普通写入不备份、连删只备一次（含 61 秒冷却等待）
 
 # 控制台（需要 playwright，装在托管 node 工作区）
 set NODE_PATH=%USERPROFILE%\.workbuddy-ai\binaries\node\workspace\node_modules
 node tests/console1.js
 node tests/console2.js
 node tests/console3.js
+node tests/console-estimate.js  # 不设预估：不限时、负载兜底、编辑回填
 node tests/est-unit.js          # 预估单位切换
 node tests/shots-readme.js      # 重新生成 docs/ 里的 README 截图
+```
+
+`shots-readme.js` 只出控制台那两张。悬浮清单的图要用 `cap.exe` 单独抓：
+`w-dot.png`、`w-pill-urgent.png`、`w-pill-run.png` 抓好后合成折叠态配图。
+
+```
+python tests/compose-widget-states.py <截图目录>
 ```
 
 端口默认 8770：四个 Python 脚本读 `GOGOSPOT_PORT`，控制台脚本读 `GOGOSPOT_BASE`
@@ -55,6 +65,10 @@ g++ -std=c++17 -O2 -static -municode tests/cap.cpp -o %TEMP%\cap.exe ^
 g++ -std=c++17 -O2 -static -municode tests/widget_probe.cpp -o %TEMP%\widget_probe.exe ^
     -luser32
 ```
+
+`cap.exe` 后面还可以跟 `[缩放] [抄屏幕] [pid] [窗口类]`。同时开着正式实例和隔离副本时，
+用 pid 锁定要抓的那一个；抓右键菜单这类没有标题的窗口时传空标题 + 窗口类
+`GoGoSpotMenuWnd`。
 
 `hit_test.cpp` 包含 `src/widget.cpp`，自带几个 `app*` 空实现补上外部接口依赖；
 `cap.cpp` 和 `widget_probe.cpp` 不依赖项目源码。

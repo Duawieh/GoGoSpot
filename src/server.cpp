@@ -1,5 +1,5 @@
 // GoGoSpot 后台：托管 web/ 静态文件，用 REST 接口读写 data/tasks.json，
-// 覆盖写入前自动备份（最多 40 份）。纯 Winsock2 实现，不依赖第三方库。
+// 每天定时备份两次（最多 40 份）。纯 Winsock2 实现，不依赖第三方库。
 
 #define WIN32_LEAN_AND_MEAN
 // 使用 IFileOpenDialog 需要启用 Vista 及以上版本的 Windows SDK 定义

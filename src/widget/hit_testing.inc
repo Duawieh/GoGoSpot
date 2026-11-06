@@ -180,10 +180,9 @@ static void openEstPicker() {
 
 static void applyEstPicker() {
     int total = g_estDay * 1440 + g_estHour * 60 + g_estMinute;
-    if (total <= 0) total = 60;               // 不再允许空预估，最少 1 小时
     if (total > 99999) total = 99999;         // 和服务端的上限对齐
     g_editEstCustom = total;
-    g_editEst = EST_CUSTOM;
+    g_editEst = (total > 0) ? EST_CUSTOM : -1;  // 全填 0 就是不设
     g_pickingEst = false;
 }
 

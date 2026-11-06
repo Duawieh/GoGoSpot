@@ -40,7 +40,7 @@ async function requireIsolated() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.waitForTimeout(400);
 
-  check('页面标题', (await page.title()) === 'GoGoSpot 控制台', await page.title());
+  check('页面标题', (await page.title()) === 'GoGoSpot 控制台页面', await page.title());
   check('初始空状态可见', await page.locator('#empty').isVisible());
   await page.screenshot({ path: path.join(SHOTS, 'c1-empty.png') });
 

@@ -125,7 +125,8 @@ static bool    g_pressPending = false;
 static POINT   g_pressPt{};
 static POINT   g_pressWin{};
 
-// 就地添加时选的截止 / 预估。due：0 今天 1 明天 2 后天 3 自选 4 不设；est 默认 1（1 小时）
+// 就地添加时选的截止 / 预估。due：0 今天 1 明天 2 后天 3 自选 4 不设；
+// est：0/1/2 是常用档，3 自定义，-1 不设
 static int     g_editDue = 4;
 static int     g_editEst = 1;
 static bool    g_hoverCancel = false;
@@ -175,10 +176,10 @@ static bool    g_progAll = false;   // 为真时所有进度条都吃出现动�
 static REAL    g_dotRingA  = 0.0f;    // 圆点外那圈环的透明度
 static bool    g_dotRingOn = false;   // 上一次算出来的目标状态，用来抓“刚重新出现”
 
-// 预估时长：三档常用的 + 自定义。新建任务默认 1 小时，不再提供「不设」
+// 预估时长：三档常用的 + 自定义 + 不设。不设的任务只当提醒，进度环走紫色呼吸。
 static const int    EST_MIN[3] = { 30, 60, 120 };
-static const wchar_t* EST_LABEL[4] = { L"30分", L"1时", L"2时", L"自定义" };
-static const int    EST_CHIPS = 4;
+static const wchar_t* EST_LABEL[5] = { L"30分", L"1时", L"2时", L"自定义", L"不设" };
+static const int    EST_CHIPS = 5;
 static const int    EST_CUSTOM = 3;          // “自定义”那一格的下标
 static const wchar_t* DUE_LABEL[5] = { L"今天", L"明天", L"后天", L"自定义", L"不设" };
 

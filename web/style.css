@@ -250,7 +250,8 @@ body {
    滑块恒为白色，靠底色深浅和投影把当前档位区分出来 */
 .theme-sw[data-mode="light"] {
   --ts-x: 1px;
-  --ts-bg: linear-gradient(90deg, #f6fbff, #cfe4fb);
+  /* 蓝为主，末端掺一层很薄的紫（periwinkle），和环境里的品牌紫接上 */
+  --ts-bg: linear-gradient(90deg, #f7fbff 0%, #d3e3fc 58%, #d9d9fb 100%);
   --ts-ico: #2f7fd4;
   --ts-ico-idle: #6a9bc9;
 }
