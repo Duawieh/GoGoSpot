@@ -17,7 +17,7 @@ Windows 本地运行的**超轻量级**待办清单管理器，体积不足 1 MB
 
 折叠状态下的悬浮清单在有**紧急任务**或**计时任务**时仍然会通过样式变化来提高醒目程度。
 
-<img src="docs/widget-collapsed.png" alt="折叠态的不同形态" width="85%">
+<img src="docs/widget-collapsed.png" alt="折叠态的不同形态" width="100%">
 
 展开后的悬浮清单提供了更丰富的任务管理功能，并且有**日间**和**夜间**两种主题模式。
 
