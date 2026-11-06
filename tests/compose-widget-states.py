@@ -1,14 +1,16 @@
 # 把折叠态的不同形态合成一张 README 配图。
-# 输入是 tests/cap.cpp 抓的窗口截图，黑底 RGBA，所以画布也用纯黑，接缝看不出来。
+# 输入是 tests/cap.cpp 抓的窗口截图，黑底 RGBA；画布用 GitHub 深色背景 #0D1117，
+# 合成后把源图的黑底一起抬到画布色，接缝和黑块都看不出来。
 # 上一行是圆点态，下一行是窄条态；单行排四张会到 1500px，塞进 README 字就太小了。
 import os
 import sys
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'build', 'test', 'shots3')
 OUT = os.path.join(ROOT, 'docs', 'widget-collapsed.png')
+BG = (13, 17, 23)
 
 ROWS = [
     [
@@ -61,7 +63,7 @@ def main():
     width = max(rowW) + MARGIN * 2
     height = TOP * 2 + rowH * len(rows) + ROW_GAP * (len(rows) - 1)
 
-    canvas = Image.new('RGB', (width, height), (0, 0, 0))
+    canvas = Image.new('RGB', (width, height), BG)
     draw = ImageDraw.Draw(canvas)
 
     y = TOP
@@ -74,6 +76,9 @@ def main():
                       font=font, fill=(138, 143, 158))
             x += slot + GAP
         y += rowH + ROW_GAP
+
+    # 源图是黑底抓的，逐通道取 max 把黑底抬到画布色，避免贴图周围出现黑块
+    canvas = ImageChops.lighter(canvas, Image.new('RGB', canvas.size, BG))
 
     canvas.save(OUT, optimize=True)
     print('wrote', OUT, canvas.size)
