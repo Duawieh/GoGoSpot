@@ -708,6 +708,9 @@ body {
   left: -4px;
   z-index: 40;
   width: 252px;
+  /* 窗口特别矮时由 JS 设 max-height，这里只负责让它能滚 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px 8px 7px;
   border-radius: 14px;
   border: 1px solid var(--border-2);
@@ -718,6 +721,18 @@ body {
 }
 
 .due-pop[hidden] { display: none; }
+
+/* 下方放不下时翻到按钮上方：小屏或弹窗靠底时，日历不会顶出视口 */
+.due-pop.is-up {
+  top: auto;
+  bottom: calc(100% + 7px);
+  animation-name: estMenuInUp;
+}
+
+@keyframes estMenuInUp {
+  from { opacity: 0; transform: translateY(5px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
 
 .due-top {
   display: flex;
@@ -1892,9 +1907,11 @@ html[data-theme="light"] .task:hover { background: #f7f9fd; }
   inset: 0;
   z-index: 70;
   display: flex;
-  align-items: center;
+  /* 贴顶而不是垂直居中：截止日历是向下展开的弹层，居中时在小屏上会被顶出视口 */
+  align-items: flex-start;
   justify-content: center;
   padding: 28px;
+  padding-top: clamp(16px, 11vh, 120px);
   background: rgba(5, 7, 11, 0.5);
   backdrop-filter: blur(10px) saturate(0.92);
   -webkit-backdrop-filter: blur(10px) saturate(0.92);

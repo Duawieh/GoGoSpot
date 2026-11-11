@@ -484,6 +484,15 @@ document.addEventListener('visibilitychange', () => {
 // 再按截止时间，无截止时间的垫底；完全相同的保持原来的先后（sort 是稳定的）。
 // 紧急度用和圆点、窄条同一个 urgencyOf，列表第一行就是圆点最急的那条。
 function byPinUrgencyDue(a, b) {
+  // 进行中的任务最前，进度高的在上（不限时按 0 计）；其余按置顶 → 紧急度 → 截止时间。
+  // 进行中压过置顶：那是此刻正在做的事，比任何静态优先级都该先看到。
+  const ra = a.startedAt ? progressRatio(a) : -1;
+  const rb = b.startedAt ? progressRatio(b) : -1;
+  const aRun = ra >= 0;
+  const bRun = rb >= 0;
+  if (aRun !== bRun) return aRun ? -1 : 1;
+  if (aRun && ra !== rb) return rb - ra;
+
   if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
   const ua = urgencyOf(a);
   const ub = urgencyOf(b);
@@ -908,6 +917,20 @@ function openDuePop(open) {
   const pw = el.duePop.offsetWidth || 252;
   const left = Math.max(10, Math.min(fr.left - 4, window.innerWidth - 10 - pw));
   el.duePop.style.left = `${left - fr.left}px`;
+
+  // 垂直方向同理：默认向下展开，下方装不下就翻到按钮上方。
+  // 两边都装不下时（窗口特别矮）取空间大的一侧，并限制高度让面板内部滚动，
+  // 保证底部的「今天 / 明天 / 清除」永远够得到。
+  el.duePop.classList.remove('is-up');
+  el.duePop.style.maxHeight = '';
+  const ph = el.duePop.offsetHeight || 0;
+  const below = window.innerHeight - fr.bottom - 10;
+  const above = fr.top - 10;
+  if (ph > below) {
+    if (above > below) el.duePop.classList.add('is-up');
+    const room = Math.max(above, below);
+    if (ph > room) el.duePop.style.maxHeight = `${Math.max(160, room)}px`;
+  }
 }
 
 function pickDueDate(ds) {

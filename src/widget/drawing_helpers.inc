@@ -175,11 +175,21 @@ static Urgency urgencyOf(const Task& t) {
     return (Urgency)g_buckets[lo].tier;
 }
 
-// 列表顺序：置顶最前，其次按紧急程度（红 → 黄 → 普通），再按到期时间，没截止的垫底。
-// 用的是和圆点外圈、窄条同一个 urgencyOf，最急的一条一定排在展开列表的第一行。
+// 列表顺序：进行中的任务最前，进度高的在前（不限时的按 0 计），
+// 其余按置顶 → 紧急程度（红 → 黄 → 普通）→ 到期时间，没截止的垫底。
+// 进行中压过置顶是有意的：那是用户此刻正在做的事，比任何静态优先级都该先看到。
 // 必须在 rebuildWorkload 之后调用：黄线依赖整份任务的累计负载。
+static REAL runningProgress(const Task& t);   // 定义在下面「进行中的任务」那节
+
 static void sortByUrgency() {
     std::stable_sort(g_tasks.begin(), g_tasks.end(), [](const Task& a, const Task& b) {
+        REAL pa = runningProgress(a);
+        REAL pb = runningProgress(b);
+        bool ra = (pa >= 0.0f);
+        bool rb = (pb >= 0.0f);
+        if (ra != rb) return ra;                  // 进行中的一律排前面
+        if (ra && pa != pb) return pa > pb;       // 都在进行中：进度高的在上
+
         if (a.pinned != b.pinned) return a.pinned;
 
         Urgency ua = urgencyOf(a);
@@ -213,23 +223,31 @@ static Urgency worstUrgency() {
 // 进行中的任务：起始时间和用时占比，pillTask 和 paintRow 都要用
 static void progressOf(const Task& t, long long nowMs, long long& startMs, REAL& ratio);
 
+// 进行中的任务返回 0..1；不限时的没有比例可算，按 0；
+// 没在进行返回 -1，调用方靠它区分「进度 0」和「根本不在进行中」。
+static REAL runningProgress(const Task& t) {
+    if (t.startedAt <= 0) return -1.0f;
+    if (!hasEstimate(t)) return 0.0f;
+    long long st = 0;
+    REAL r = 0;
+    progressOf(t, nowMs(), st, r);
+    return r;
+}
+
 // 窄条和圆点环上显示哪条：
-//   1. 红色任务中优先“已经在做”的一条（多条时比较进度）；均未进行时按截止时间最近
-//   2. 没有红色时显示黄色任务，同样优先在做的
-//   3. 都不紧急 → 显示进度占比最高的进行中任务
-//   4. 一条都没在进行 → 退回最早结束的那条
+//   1. 进行中的任务，进度最高的一条（不限时按 0，排在其他进行中之后）
+//   2. 没有进行中的 → 红色里截止最近的一条
+//   3. 再没有 → 黄色里截止最近的一条
+//   4. 都不紧急 → 最早结束的那条
 //
-// 第 2 步不能省：圆点外圈画的是全局最急的那一档（worstUrgency），
-// 窄条若按“进度最高”挑，就会出现圈是黄的、窄条里却是一条紫任务。
+// 进行中排第一：圆点外圈和窄条上的进度环只有它画得出来。
+// 2、3 步不能省：圆点外圈画的是全局最急的那一档（worstUrgency），
+// 窄条若只按进度挑，就会出现圈是黄的、窄条里却是一条紫任务。
 static const Task* pillTask() {
-    const Task* redRunning = nullptr;    // 红色的、且在进行的
+    const Task* running = nullptr;       // 进行中，进度最高
     const Task* redAny = nullptr;        // 红色的（按 ddl）
-    const Task* amberRunning = nullptr;  // 黄色的、且在进行的
     const Task* amberAny = nullptr;      // 黄色的（按 ddl）
-    const Task* mostDone = nullptr;      // 都不紧急时，进度最多
     const Task* nearest = nullptr;       // 最早结束
-    REAL bestRedRatio = -1.0f;
-    REAL bestAmberRatio = -1.0f;
     REAL bestRatio = -1.0f;
 
     for (size_t i = 0; i < g_tasks.size(); ++i) {
@@ -237,29 +255,14 @@ static const Task* pillTask() {
         if (!g_justDone.empty() && t.id == g_justDone) continue;   // 刚完成的任务暂不显示
 
         const Urgency u = urgencyOf(t);
-        const bool isRed = (u == URG_RED);
-        const bool isAmber = (u == URG_YELLOW);
-        if (isRed && (!redAny || t.dueMs < redAny->dueMs)) redAny = &t;
-        if (isAmber && (!amberAny || t.dueMs < amberAny->dueMs)) amberAny = &t;
+        if (u == URG_RED && (!redAny || t.dueMs < redAny->dueMs)) redAny = &t;
+        if (u == URG_YELLOW && (!amberAny || t.dueMs < amberAny->dueMs)) amberAny = &t;
 
         if (t.startedAt > 0) {
-            long long st = 0;
-            REAL r = 0;
-            progressOf(t, nowMs(), st, r);
-
-            if (isRed && (r > bestRedRatio ||
-                          (r == bestRedRatio && redRunning && t.dueMs < redRunning->dueMs))) {
-                bestRedRatio = r;
-                redRunning = &t;
-            }
-            if (isAmber && (r > bestAmberRatio ||
-                            (r == bestAmberRatio && amberRunning && t.dueMs < amberRunning->dueMs))) {
-                bestAmberRatio = r;
-                amberRunning = &t;
-            }
-            if (r > bestRatio || (r == bestRatio && mostDone && t.dueMs < mostDone->dueMs)) {
+            REAL r = runningProgress(t);
+            if (r > bestRatio) {
                 bestRatio = r;
-                mostDone = &t;
+                running = &t;
             }
         }
 
@@ -268,11 +271,9 @@ static const Task* pillTask() {
         }
     }
 
-    if (redRunning) return redRunning;
+    if (running) return running;
     if (redAny) return redAny;
-    if (amberRunning) return amberRunning;
     if (amberAny) return amberAny;
-    if (mostDone) return mostDone;
     return nearest;
 }
 
