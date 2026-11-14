@@ -66,6 +66,7 @@ static bool hitPin(int cx, int cy, int row) {
 
 // 单击切换“正在进行”
 static void toggleStart(const Task& t) {
+    if (t.type == 1) return;            // 提醒任务不关心何时结束，不允许计时
     if (g_port == 0) findServerPort();
     if (g_port == 0) return;
     if (t.startedAt == 0) {
@@ -186,11 +187,11 @@ static void applyEstPicker() {
     g_pickingEst = false;
 }
 
-// 点在哪个选项上：返回 row*100+i（0=截止 1=预估），没点中返回 -1
+// 点在哪个选项上：返回 row*100+i（0=类型 1=时间 2=预估），没点中返回 -1
 static int hitChip(int cx, int cy) {
     if (!g_editing) return -1;
-    for (int row = 0; row < 2; ++row) {
-        int n = (row == 0) ? 5 : EST_CHIPS;
+    for (int row = 0; row < 3; ++row) {
+        int n = (row == 0) ? TYPE_CHIPS : (row == 1 ? 5 : EST_CHIPS);
         for (int i = 0; i < n; ++i) {
             RectF r = chipRect(row, i, n);
             if (inRect(cx, cy, r.X, r.Y, r.Width, r.Height)) return row * 100 + i;

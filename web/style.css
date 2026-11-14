@@ -674,6 +674,62 @@ body {
 .task-start:hover { opacity: 1; background: var(--accent-soft); }
 
 /* 截止时间：自绘日历 + 时分面板，原生 date/time 在深色下会露出系统占位和箭头 */
+/* 任务类型：自绘下拉。原生 select 的弹层由系统画，深色主题下会露出白底和蓝框 */
+.meta-type { position: relative; padding-right: 2px; cursor: pointer; }
+.type-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 0;
+  cursor: pointer;
+}
+.type-btn:hover { color: var(--text); }
+.meta-type.is-open { background: var(--accent-soft); }
+.meta-type.is-open .type-btn { color: var(--accent); }
+.meta-type.is-open .est-caret { transform: rotate(180deg); }
+
+.type-pop {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: -4px;
+  z-index: 40;
+  width: 96px;
+  padding: 5px;
+  border-radius: 12px;
+  border: 1px solid var(--border-2);
+  background: var(--menu-bg);
+  box-shadow: var(--shadow);
+  cursor: default;
+  animation: estMenuIn .15s cubic-bezier(.22, 1, .36, 1) both;
+}
+.type-pop[hidden] { display: none; }
+
+.type-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.type-item:hover { background: var(--accent-soft); color: var(--accent); }
+.type-item.is-on { color: var(--accent); }
+
+/* 提前提醒：紧挨类型的一格小输入，只有提醒任务显示 */
+.meta-adv input { width: 26px; text-align: center; }
+.adv-unit { font-size: 12px; }
+.meta-adv[hidden] { display: none; }
+
 .meta-due {
   position: relative;
   cursor: pointer;

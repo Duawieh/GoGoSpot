@@ -334,9 +334,10 @@ static void paintDot(Graphics& g) {
 
 static REAL panelTop()      { return (REAL)(CARD_H - PANEL_H); }
 static REAL panelInputTop() { return panelTop() + 8; }
-static REAL panelDueTop()   { return panelTop() + 46; }
-static REAL panelEstTop()   { return panelTop() + 76; }
+static REAL panelTypeTop()  { return panelTop() + 46; }
+static REAL panelDueTop()   { return panelTop() + 76; }
 static REAL panelLinkTop()  { return panelTop() + 106; }
+static REAL panelEstTop()   { return panelTop() + 136; }
 
 // “关联材料”那一行：选择 / 网址输入框 / 清空
 static RectF linkPickRect()   { return RectF(68, panelLinkTop(), 44, (REAL)CHIP_H); }
@@ -365,7 +366,7 @@ static RectF cancelRect() { return RectF((REAL)CARD_W - 36, panelInputTop() + 4,
 static RectF chipRect(int row, int i, int count) {
     const REAL x0 = 44, x1 = (REAL)CARD_W - 10, gap = 6.0f;
     REAL w = (x1 - x0 - gap * (count - 1)) / count;
-    REAL y = (row == 0) ? panelDueTop() : panelEstTop();
+    REAL y = (row == 0) ? panelTypeTop() : (row == 1 ? panelDueTop() : panelEstTop());
     return RectF(x0 + i * (w + gap), y, w, (REAL)CHIP_H);
 }
 
@@ -448,7 +449,7 @@ static void paintEditPanel(Graphics& g) {
     if (g_editText.empty()) {
         drawText(g, L"任务标题，Enter 添加", bodyFont(),
                  RectF(tx, inR.Y, tw, inR.Height), pal().textFaint, true, 0);
-        if (g_caretOn) {
+        if (g_caretOn && !g_linkFocus) {
             SolidBrush cb(pal().accent);
             g.FillRectangle(&cb, tx, inR.Y + 7, 1.6f, inR.Height - 14);
         }
@@ -467,7 +468,7 @@ static void paintEditPanel(Graphics& g) {
                      RectF(tx - scroll, inR.Y, meas.Width + 8, inR.Height), &tfmt, &tb);
         g.Restore(st);
 
-        if (g_caretOn) {
+        if (g_caretOn && !g_linkFocus) {
             REAL caretX = tx + caretOff - scroll;
             if (caretX < tx) caretX = tx;
             if (caretX > tx + tw) caretX = tx + tw;
@@ -495,12 +496,22 @@ static void paintEditPanel(Graphics& g) {
         g.DrawLine(&xp, cxc + 4.5f, cyc - 4.5f, cxc - 4.5f, cyc + 4.5f);
     }
 
-    // 截止
-    drawText(g, L"截止", smallFont(),
+    // 类型：过程任务结束时提醒、可计时；提醒任务开始时提醒、不可计时
+    drawText(g, L"类型", smallFont(),
+             RectF((REAL)SHADOW + 10, (REAL)SHADOW + panelTypeTop(), 30, (REAL)CHIP_H),
+             pal().textFaint, true, 0);
+    for (int i = 0; i < TYPE_CHIPS; ++i) {
+        RectF r = chipRect(0, i, TYPE_CHIPS);
+        r.X += SHADOW; r.Y += SHADOW;
+        paintChip(g, r, TYPE_LABEL[i], g_editType == i);
+    }
+
+    // 时间：过程任务填截止，提醒任务填开始
+    drawText(g, g_editType == 1 ? L"开始" : L"截止", smallFont(),
              RectF((REAL)SHADOW + 10, (REAL)SHADOW + panelDueTop(), 30, (REAL)CHIP_H),
              pal().textFaint, true, 0);
     for (int i = 0; i < 5; ++i) {
-        RectF r = chipRect(0, i, 5);
+        RectF r = chipRect(1, i, 5);
         r.X += SHADOW; r.Y += SHADOW;
         const wchar_t* label = DUE_LABEL[i];
         wchar_t picked[16];
@@ -581,7 +592,7 @@ static void paintEditPanel(Graphics& g) {
     int onEst = (g_editEst < 0) ? (EST_CHIPS - 1)
               : (g_editEst == EST_CUSTOM ? EST_CUSTOM : g_editEst);
     for (int i = 0; i < EST_CHIPS; ++i) {
-        RectF r = chipRect(1, i, EST_CHIPS);
+        RectF r = chipRect(2, i, EST_CHIPS);
         r.X += SHADOW; r.Y += SHADOW;
         paintChip(g, r, EST_LABEL[i], i == onEst);
     }
@@ -1057,8 +1068,8 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     Color uc = (u == URG_RED) ? pal().red : pal().amber;
 
     // 进行中：进度色铺在最底层，文字、勾选框、暖色竖条、按钮都压在它上面
-
-    if (t.startedAt > 0) {
+    // 提醒任务不关心何时结束，没有进度这回事
+    if (t.startedAt > 0 && t.type != 1) {
         long long startMs = 0;
         REAL ratio = 0;
         progressOf(t, nowMs(), startMs, ratio);
@@ -1151,7 +1162,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
             paintRise(g, qcx, pcy, 0.85f, fadeCol(bc, alpha));
         }
 
-        if (running || (rowIdx >= 0 && g_hoverRow == rowIdx && !g_dragging)) {
+        if (t.type != 1 && (running || (rowIdx >= 0 && g_hoverRow == rowIdx && !g_dragging))) {
             Color bc = urgencyColor(u);
             SolidBrush bgc(fadeCol(Color(running ? 72 : 56, bc.GetR(), bc.GetG(), bc.GetB()), alpha));
             g.FillEllipse(&bgc, pcx - pr, pcy - pr, pr * 2, pr * 2);
@@ -1178,7 +1189,7 @@ static void paintRow(Graphics& g, const Task& t, int rowIdx, REAL rowY, REAL dx,
     else if (meta.empty()) meta = dur;
 
     // 进行中再补一段：有预估就数“已进行”多久，没预估只说“正在进行”
-    if (t.startedAt > 0) {
+    if (t.startedAt > 0 && t.type != 1) {
         long long st = 0;
         REAL r2 = 0;
         progressOf(t, nowMs(), st, r2);

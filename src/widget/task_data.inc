@@ -60,6 +60,9 @@ static bool fetchTasks() {
         t.title = u8tow(f[4]);
         if (f.size() >= 7) t.startedAt = _strtoi64(f[6].c_str(), nullptr, 10);
         if (f.size() >= 8) t.pinned = (f[7] == "1");
+        if (f.size() >= 9)  t.type = (f[8] == "1") ? 1 : 0;
+        if (f.size() >= 10) t.startMs = _strtoi64(f[9].c_str(), nullptr, 10);
+        if (f.size() >= 11) t.advanceMin = atoi(f[10].c_str());
         if (f.size() >= 6 && !f[5].empty()) {
             size_t start = 0;
             for (size_t i = 0; i <= f[5].size(); ++i) {

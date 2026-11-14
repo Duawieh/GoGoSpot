@@ -85,6 +85,10 @@ static void clearRepeat(JVal& t) {
 // 复制一份当下一期：标题、标签、链接、预估、重复规则都跟着走，只换 id 和日期。
 // 复制和清标记必须在同一次扩容之前做完 —— push_back 之后 src 就是悬垂引用，
 // 上一版在这里丢过一次写入，那条任务于是每 20 秒派生一份，永远停不下来。
+// 下面两个定义在文件后半段，派生函数要用
+static long long numField(const JVal& t, const char* key);
+static string msToDueStr(long long ms);
+
 static void spawnNext(JVal& tasks, JVal& src, const string& dueStr) {
     JVal copy = src;
     clearRepeat(src);
@@ -113,6 +117,17 @@ static void spawnNext(JVal& tasks, JVal& src, const string& dueStr) {
     }
     // 新一期的锚点就是它的 due，即原锚点加一个周期；复制过来的旧锚点必须覆盖掉
     setStrField(copy, "route_origin_date", dueStr);
+
+    // 提醒任务的时间轴是「开始 → 截止」：due 往前推了一期，开始时刻也要跟着推，
+    // 否则新一期会变成「开始在过去、截止在将来」的怪状态
+    JVal* tp = copy.get("TaskType");
+    if (tp && tp->kind == JVal::Str && tp->str == "remind") {
+        long long est = numField(copy, "estimate");
+        if (est <= 0) est = 60;
+        long long dms = dueToUnixMs(dueStr);
+        if (dms > 0) setStrField(copy, "Start", msToDueStr(dms - est * 60000LL));
+    }
+
     tasks.arr.push_back(std::move(copy));
 }
 
@@ -149,6 +164,11 @@ static Response apiStart(const string& id, bool on) {
         if (t.kind != JVal::Obj) continue;
         JVal* tid = t.get("id");
         if (!tid || tid->kind != JVal::Str || tid->str != id) continue;
+
+        // 提醒任务不关心何时结束，没有计时这回事
+        JVal* tp = t.get("TaskType");
+        if (tp && tp->kind == JVal::Str && tp->str == "remind")
+            return jsonError(400, "reminder task cannot be started");
 
         JVal* sa = t.get("startedAt");
         if (!sa) {
@@ -260,11 +280,14 @@ static long long numField(const JVal& t, const char* key) {
     return (v && v->kind == JVal::Num) ? (long long)v->num : 0;
 }
 
-// 进行中任务达到 100%（预计时长耗尽）时发送系统通知。
-// 起始时间算法与悬浮清单和控制台保持一致：min(计时开始时刻, 截止 - 预估)。
+// 到点提醒。
+//   过程任务：计时走完预计时长（100%）时提醒一次，起始时间与界面一致：
+//             min(计时开始时刻, 截止 - 预估)
+//   提醒任务：到达 Start 时提醒一次，与计时无关
+// 首次扫描只登记状态：启动时已经过点的任务不补弹通知。
 static void sweepTimerDone() {
-    // 同一次计时只通知一次。key 用 id#开始时刻，重开计时就是新的 key。
-    // 首次扫描仅登记状态；启动时已达到 100% 的任务不视为刚完成。
+    // 同一次提醒只发一次。过程任务的 key 用 id#开始时刻，重开计时就是新的 key；
+    // 提醒任务用 id@开始时刻，改了开始时间就重新算一次。
     static std::vector<string> told;
     static bool primed = false;
 
@@ -275,9 +298,33 @@ static void sweepTimerDone() {
     JVal* tasks = root.get("tasks");
     if (!tasks || tasks->kind != JVal::Arr) return;
 
+    // 登记 key；返回 true 表示这条已经通知过
+    auto seen = [&](const string& key) -> bool {
+        for (size_t i = 0; i < told.size(); ++i) {
+            if (told[i] == key) return true;
+        }
+        if (told.size() > 500) told.clear();          // 别无限长，真到这一步清空重来也不碍事
+        told.push_back(key);
+        return false;
+    };
+
     long long now = nowUnixMs();
     for (auto& t : tasks->arr) {
         if (t.kind != JVal::Obj) continue;
+
+        JVal* tp = t.get("TaskType");
+        if (tp && tp->kind == JVal::Str && tp->str == "remind") {
+            JVal* st = t.get("Start");
+            long long s = (st && st->kind == JVal::Str) ? dueToUnixMs(st->str) : 0;
+            if (s <= 0 || now < s) continue;
+            if (now - s > 24LL * 3600000LL) continue;   // 太久以前的不补，避免开机弹一堆旧提醒
+            if (seen(strField(t, "id") + "@" + std::to_string(s))) continue;
+            if (!primed) continue;
+
+            wstring msg = L"【" + u8tow(strField(t, "title")) + L"】开始";
+            appNotify(msg.c_str());
+            continue;
+        }
 
         long long started = numField(t, "startedAt");
         long long est = numField(t, "estimate") * 60000LL;
@@ -288,14 +335,7 @@ static void sweepTimerDone() {
         if (dueMs > 0 && dueMs - est < start) start = dueMs - est;
         if (now - start < est) continue;             // 还没走完
 
-        string key = strField(t, "id") + "#" + std::to_string(started);
-        bool seen = false;
-        for (size_t i = 0; i < told.size(); ++i) {
-            if (told[i] == key) { seen = true; break; }
-        }
-        if (seen) continue;
-        if (told.size() > 500) told.clear();          // 别无限长，真到这一步清空重来也不碍事
-        told.push_back(key);
+        if (seen(strField(t, "id") + "#" + std::to_string(started))) continue;
         if (!primed) continue;
 
         wstring msg = L"【" + u8tow(strField(t, "title")) + L"】计时结束";
@@ -437,7 +477,8 @@ static std::vector<string> splitLinks(const string& s) {
 }
 
 static Response apiAdd(const string& rawTitle, const string& rawDue, int estimate,
-                       const string& rawLinks) {
+                       const string& rawLinks, const string& rawType,
+                       const string& rawStart, int advance) {
     // 去首尾空白；URL 解码后是 UTF-8 字节，截断必须落在字符边界上
     size_t a = rawTitle.find_first_not_of(" \t\r\n");
     size_t b = rawTitle.find_last_not_of(" \t\r\n");
@@ -466,12 +507,30 @@ static Response apiAdd(const string& rawTitle, const string& rawDue, int estimat
     if (estimate > 99999) estimate = 99999;
     JVal vEs;   vEs.kind = JVal::Num;  vEs.num = estimate;      t.obj.emplace_back("estimate", std::move(vEs));
 
-    if (validDue(rawDue)) {
+    bool remind = (rawType == "remind");
+
+    // 提醒任务的 due 不从界面取：它等于「开始 + 持续时间」，交给 normalizeTaskKinds 算
+    if (!remind && validDue(rawDue)) {
         JVal vDu; vDu.kind = JVal::Str; vDu.str = rawDue.substr(0, 16);
         t.obj.emplace_back("due", std::move(vDu));
     } else {
         JVal vDu; vDu.kind = JVal::Nul;
         t.obj.emplace_back("due", std::move(vDu));
+    }
+
+    {
+        JVal vTp; vTp.kind = JVal::Str; vTp.str = remind ? "remind" : "process";
+        t.obj.emplace_back("TaskType", std::move(vTp));
+    }
+    if (remind) {
+        if (validDue(rawStart)) {
+            JVal vSt; vSt.kind = JVal::Str; vSt.str = rawStart.substr(0, 16);
+            t.obj.emplace_back("Start", std::move(vSt));
+        }
+        if (advance < 0) advance = 0;
+        if (advance > 99999) advance = 99999;
+        JVal vAd; vAd.kind = JVal::Num; vAd.num = advance;
+        t.obj.emplace_back("Advance", std::move(vAd));
     }
 
     JVal vLks;
@@ -487,6 +546,7 @@ static Response apiAdd(const string& rawTitle, const string& rawDue, int estimat
 
     tasks->arr.push_back(std::move(t));
 
+    normalizeTaskKinds(root);          // 提醒任务在这里补出 due
     if (!saveTasksRoot(root)) return jsonError(500, "write failed");
     return jsonOk("\"id\":\"" + id + "\"");
 }
@@ -517,6 +577,56 @@ static string msToDueStr(long long ms) {
     return string(b);
 }
 
+// 提醒任务的 due 由「开始 + 持续时间」推出来：持续时间没填按 1 小时，
+// 其他任务靠这个时长给它预留时间。过程任务只认 due，这里不动。
+// 返回值表示有没有真的改过，PUT 靠它决定要不要重新序列化。
+static bool normalizeTaskKinds(JVal& root) {
+    JVal* tasks = root.get("tasks");
+    if (!tasks || tasks->kind != JVal::Arr) return false;
+
+    bool changed = false;
+    for (auto& t : tasks->arr) {
+        if (t.kind != JVal::Obj) continue;
+
+        JVal* tp = t.get("TaskType");
+        bool remind = tp && tp->kind == JVal::Str && tp->str == "remind";
+        if (!remind) continue;
+
+        // 提前提醒：负数没有意义，缺省补 0
+        JVal* adv = t.get("Advance");
+        if (!adv) {
+            JVal v; v.kind = JVal::Num; v.num = 0;
+            t.obj.emplace_back("Advance", std::move(v));
+            changed = true;
+        } else if (adv->kind != JVal::Num || adv->num < 0) {
+            adv->kind = JVal::Num;
+            adv->num = 0;
+            changed = true;
+        }
+
+        JVal* st = t.get("Start");
+        if (!st || st->kind != JVal::Str || !validDue(st->str)) continue;
+
+        long long s = dueToUnixMs(st->str);
+        if (s <= 0) continue;
+        long long est = numField(t, "estimate");
+        if (est <= 0) est = 60;
+        string want = msToDueStr(s + est * 60000LL);
+
+        JVal* due = t.get("due");
+        if (!due) {
+            JVal v; v.kind = JVal::Str; v.str = want;
+            t.obj.emplace_back("due", std::move(v));
+            changed = true;
+        } else if (due->kind != JVal::Str || due->str != want) {
+            due->kind = JVal::Str;
+            due->str = want;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 // 悬浮清单右键“推迟一天”：在原截止时间上加 24 小时；没有截止时间就从现在算
 static Response apiSnooze(const string& id) {
     if (id.empty()) return jsonError(400, "missing id");
@@ -532,6 +642,29 @@ static Response apiSnooze(const string& id) {
         if (t.kind != JVal::Obj) continue;
         JVal* tid = t.get("id");
         if (!tid || tid->kind != JVal::Str || tid->str != id) continue;
+
+        // 提醒任务的时间轴是「开始 → 截止」，推迟该动开始时刻；
+        // 只改 due 会让开始时间留在原地，等于把时长拉长一天。
+        JVal* tp = t.get("TaskType");
+        JVal* stv = t.get("Start");
+        if (tp && tp->kind == JVal::Str && tp->str == "remind" &&
+            stv && stv->kind == JVal::Str && validDue(stv->str)) {
+            long long s0 = dueToUnixMs(stv->str);
+            if (s0 <= 0) return jsonError(400, "task has no start time");
+            long long base0 = (s0 > nowUnixMs()) ? s0 : nowUnixMs();
+            string ns = msToDueStr(base0 + 24LL * 3600000LL);
+            stv->str = ns;
+
+            long long est0 = numField(t, "estimate");
+            if (est0 <= 0) est0 = 60;
+            string nd = msToDueStr(dueToUnixMs(ns) + est0 * 60000LL);
+            JVal* due0 = t.get("due");
+            if (due0) { due0->kind = JVal::Str; due0->str = nd; }
+            else { JVal v; v.kind = JVal::Str; v.str = nd; t.obj.emplace_back("due", std::move(v)); }
+
+            if (!saveTasksRoot(root)) return jsonError(500, "write failed");
+            return jsonOk("\"start\":\"" + ns + "\",\"due\":\"" + nd + "\"");
+        }
 
         JVal* due = t.get("due");
         long long cur = (due && due->kind == JVal::Str) ? dueToUnixMs(due->str) : 0;
@@ -677,10 +810,16 @@ static Response handleApi(const string& method, const string& path,
         auto itD = q.find("due");
         auto itE = q.find("estimate");
         auto itL = q.find("links");
+        auto itY = q.find("type");
+        auto itS = q.find("start");
+        auto itA = q.find("advance");
         int est = (itE == q.end()) ? 0 : atoi(itE->second.c_str());
+        int adv = (itA == q.end()) ? 0 : atoi(itA->second.c_str());
         return apiAdd(itT == q.end() ? string() : itT->second,
                       itD == q.end() ? string() : itD->second, est,
-                      itL == q.end() ? string() : itL->second);
+                      itL == q.end() ? string() : itL->second,
+                      itY == q.end() ? string() : itY->second,
+                      itS == q.end() ? string() : itS->second, adv);
     }
     if (path == "/api/snooze") {
         if (method != "POST") return jsonError(405, "use POST");

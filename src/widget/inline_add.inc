@@ -39,6 +39,8 @@ static const IID kFileOpenDialogIid =
 
 // 系统选择框：files=true 时选择文件（支持多选），false 时选择文件夹；返回完整本地路径
 static void pickLink(bool files) {
+    // 整个选择流程都算模态：期间窗口失焦、鼠标在卡片外，都不该收起清单
+    ModalScope ms;
     HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     IFileOpenDialog* dlg = nullptr;
@@ -55,11 +57,7 @@ static void pickLink(bool files) {
     dlg->SetOptions(opts);
     dlg->SetTitle(files ? L"选择要打开的文件" : L"选择文件夹");
 
-    bool ok;
-    {
-        ModalScope ms;
-        ok = SUCCEEDED(dlg->Show(g_hwnd));
-    }
+    bool ok = SUCCEEDED(dlg->Show(g_hwnd));
     if (ok) {
         IShellItemArray* items = nullptr;
         if (SUCCEEDED(dlg->GetResults(&items)) && items) {
@@ -84,6 +82,13 @@ static void pickLink(bool files) {
 
     dlg->Release();
     if (SUCCEEDED(hrInit)) CoUninitialize();
+
+    // 选择框关闭后键盘焦点不会自动回到本窗口；不取回来则回车提交、继续输入都失灵。
+    // 同时清掉对话框期间可能排上的收起计时。
+    if (g_editing) {
+        KillTimer(g_hwnd, TIMER_COLLAPSE);
+        grabKeyboardFocus();
+    }
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
@@ -162,6 +167,7 @@ static void startEdit() {
     g_editText.clear();
     g_caret = 0;
     g_editDue = 4;                           // 默认不设截止
+    g_editType = 0;                          // 默认过程任务
     g_editEst = 1;                           // 默认 1 小时，最后一格可以选「不设」
     g_customDue.clear();
     g_pickingDate = false;
@@ -251,10 +257,14 @@ static void finishEdit(bool commit, bool keepDraft) {
         if (g_port == 0) findServerPort();
         if (g_port != 0) {
             wstring path = L"/api/add?title=" + urlEncode(wtou8(title));
-            if (g_editDue >= 0 && g_editDue < 3)
-                path += L"&due=" + urlEncode(wtou8(dueAfterDays(g_editDue)));
-            else if (g_editDue == 3 && !g_customDue.empty())
-                path += L"&due=" + urlEncode(wtou8(g_customDue));
+            // 过程任务填的是截止，提醒任务填的是开始；参数名不同，后端各取各的
+            wstring when;
+            if (g_editDue >= 0 && g_editDue < 3) when = dueAfterDays(g_editDue);
+            else if (g_editDue == 3 && !g_customDue.empty()) when = g_customDue;
+
+            path += (g_editType == 1) ? L"&type=remind" : L"&type=process";
+            if (!when.empty())
+                path += (g_editType == 1 ? L"&start=" : L"&due=") + urlEncode(wtou8(when));
 
             // 将选取的文件与网址合并至 links；无效网址不加入
             std::vector<wstring> all = g_editLinks;
@@ -296,7 +306,8 @@ static void finishEdit(bool commit, bool keepDraft) {
     GetCursorPos(&pt);
     RECT wr{};
     GetWindowRect(g_hwnd, &wr);
-    if (!PtInRect(&wr, pt)) SetTimer(g_hwnd, TIMER_COLLAPSE, 340, nullptr);
+    if (!PtInRect(&wr, pt) && g_modalDepth == 0)
+        SetTimer(g_hwnd, TIMER_COLLAPSE, 340, nullptr);
 
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
@@ -504,6 +515,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             if (w == TIMER_COLLAPSE) {
                 KillTimer(h, TIMER_COLLAPSE);
+                // 模态窗口开着时鼠标必然在卡片外，此时的离开判定无效
+                if (g_modalDepth > 0) return 0;
                 POINT pt{};
                 GetCursorPos(&pt);
                 RECT wr{};
@@ -898,8 +911,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
         case WM_KILLFOCUS:
             // 失焦不算确认：只收起并保留草稿，下次打开接着填。
-            // 刚取得焦点时的抖动、右键菜单临时抢前台，都不算离开输入
-            if (g_editing && !g_menuOpen && GetTickCount() - g_focusAt > 250)
+            // 刚取得焦点时的抖动、右键菜单临时抢前台、系统选择框打开期间，都不算离开输入
+            if (g_editing && !g_menuOpen && g_modalDepth == 0 &&
+                GetTickCount() - g_focusAt > 250)
                 finishEdit(false, true);
             return 0;
 
@@ -1068,11 +1082,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
                 int chip = hitChip(cx, cy);
                 if (chip >= 0) {
-                    if (chip < 100) {                        // 截止那一排
-                        if (chip == 3) openCalendar();       // 自定义：开日历
-                        else g_editDue = chip;
-                    } else {                                 // 预估那一排
+                    if (chip < 100) {                        // 类型那一排
+                        g_editType = chip;
+                    } else if (chip < 200) {                 // 时间那一排：截止或开始
                         int i = chip - 100;
+                        if (i == 3) openCalendar();          // 自定义：开日历
+                        else g_editDue = i;
+                    } else {                                 // 预估那一排
+                        int i = chip - 200;
                         if (i == EST_CUSTOM) openEstPicker();
                         else if (i == EST_CHIPS - 1) g_editEst = -1;   // 不设
                         else g_editEst = i;

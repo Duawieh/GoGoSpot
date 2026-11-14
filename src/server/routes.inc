@@ -135,6 +135,8 @@ static void setStrField(JVal& t, const char* key, const string& val) {
 // 判断依据是与磁盘上同 id 的旧 due 比：变了就是改期，新任务则以当前 due 作为锚点；
 // 旧 due 没变时以磁盘上的锚点为准，客户端手里的旧副本不能把推迟过的节奏覆盖回去。
 // 没有 repeat 的任务不需要锚点，残留的清掉。
+static bool normalizeTaskKinds(JVal& root);   // 定义在「重复任务」那段
+
 static bool reanchorRepeats(JVal& root) {
     JVal old;
     bool haveOld = false;
@@ -240,7 +242,10 @@ static Response apiTasks(const string& method, const string& body) {
         JVal root;
         JParser p(body);
         if (p.parse(root)) {
-            bool changed = reanchorRepeats(root);
+            // 提醒任务的 due 由「开始 + 持续时间」推出来。必须排在最前面：
+            // 后面两步都要看 due，没有它会把提醒任务的重复标记当成孤立的清掉
+            bool changed = normalizeTaskKinds(root);
+            if (reanchorRepeats(root)) changed = true;
             if (dropOrphanRepeat(root)) changed = true;
             if (changed) {
                 payload.clear();
@@ -559,6 +564,24 @@ static Response apiWidget() {
             // 置顶：排在列表最前面
             JVal* pin = t.get("pinned");
             rows += (pin && pin->kind == JVal::Bool && pin->b) ? "1" : "0";
+            rows += '\t';
+
+            // 任务类型：1 = 提醒任务（只在开始时提醒，不能计时）
+            JVal* tp = t.get("TaskType");
+            bool remind = tp && tp->kind == JVal::Str && tp->str == "remind";
+            rows += remind ? "1" : "0";
+            rows += '\t';
+
+            // 提醒任务的开始时刻，0 表示没设
+            JVal* stv = t.get("Start");
+            long long startMs = (stv && stv->kind == JVal::Str) ? dueToUnixMs(stv->str) : 0;
+            rows += std::to_string(startMs);
+            rows += '\t';
+
+            // 提前提醒：分钟数，红色线就是它
+            JVal* adv = t.get("Advance");
+            long long advMin = (adv && adv->kind == JVal::Num && adv->num > 0) ? (long long)adv->num : 0;
+            rows += std::to_string(advMin);
             rows += '\n';
         }
     }

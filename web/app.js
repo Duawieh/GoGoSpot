@@ -16,6 +16,12 @@ const el = {
   estField:     $('estField'),
   estInput:     $('estInput'),
   estUnitBtn:   $('estUnitBtn'),
+  typeField:    $('typeField'),
+  typeBtn:      $('typeBtn'),
+  typeLabel:    $('typeLabel'),
+  typePop:      $('typePop'),
+  advField:     $('advField'),
+  advInput:     $('advInput'),
   dueField:     $('dueField'),
   dueBtn:       $('dueBtn'),
   dueLabel:     $('dueLabel'),
@@ -91,6 +97,8 @@ const state = {
   prevIds: null,
   loaded: false,
   loadError: false,          // 读不出任务文件时，禁止回写，避免原数据被空列表覆盖
+  taskType: 'process',       // process 过程任务 / remind 提醒任务
+  advance: 0,                // 提醒任务的提前提醒分钟数，红色线就是它
   links: [],                 // 正在编辑任务的关联材料
   repeat: '',                // 重复规则：'' / daily / weekly / biweekly / monthly
 };
@@ -146,8 +154,13 @@ function buildWorkload() {
     const red = Math.min(est + 30 * 60000, 12 * 3600000);  // 预估之外多给半小时缓冲
     const key = dt.getTime();
     let slot = byDue.get(key);
-    if (!slot) { slot = { est: 0, red: 0 }; byDue.set(key, slot); }
-    if (red > slot.red) slot.red = red;
+    if (!slot) { slot = { est: 0, red: 0, hasProcess: false }; byDue.set(key, slot); }
+    // 提醒任务的红色线是「提前提醒」，与预估无关，不参与这一档的取大；
+    // 它的预估照样计入前缀和，那段时间确实被占着
+    if (t.TaskType !== 'remind') {
+      slot.hasProcess = true;
+      if (red > slot.red) slot.red = red;
+    }
 
     if (est >= 24 * 3600000) est /= 2;           // 长任务认为已含休息
     slot.est += est;
@@ -163,6 +176,7 @@ function buildWorkload() {
       line: Math.max(cum * (cum >= 12 * 3600000 ? 2 : 1), 16 * 3600000),
       red: slot.red,
       tier: 0,
+      hasProcess: slot.hasProcess,
     });
   }
   state.workload = buckets;
@@ -178,6 +192,10 @@ function refreshTiers() {
   let carry = 0;
   for (let i = keys.length - 1; i >= 0; --i) {
     const b = state.workload.get(keys[i]);
+    // 只有提醒任务的档不定级：它的紧急度按「开始时刻减提前量」单独算，
+    // 拿负载黄线去套它没有意义，还会把黄色传给更早的过程任务。
+    // carry 不更新，更早的档照常继承更晚那一档的等级。
+    if (!b.hasProcess) { b.tier = 0; continue; }
     const remain = keys[i] - now;
     let tier = 0;
     if (remain <= 0 || remain <= b.red) tier = 2;
@@ -193,12 +211,40 @@ function ensureWorkload() {
 }
 
 function urgencyOf(t) {
-  if (!t.due || t.done) return 0;
+  if (t.done) return 0;
+
+  // 提醒任务只关心何时开始：没有黄色档，红色线就是「提前提醒」分钟数
+  if (t.TaskType === 'remind') {
+    const st = parseDue(t.Start);
+    if (!st) return 0;
+    const adv = (Number(t.Advance) || 0) * 60000;
+    return (st.getTime() - Date.now() <= adv) ? 2 : 0;
+  }
+
+  if (!t.due) return 0;
   const dt = parseDue(t.due);
   if (!dt) return 0;
   ensureWorkload();
   const b = state.workload.get(dt.getTime());
   return b ? b.tier : 0;
+}
+
+// 提醒任务显示的是开始时刻：什么时候开始，比什么时候结束更值得看
+function remindInfo(start) {
+  const dt = parseDue(start);
+  if (!dt) return null;
+
+  const clock = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+  const diff = dt.getTime() - Date.now();
+  if (diff <= 0) return { text: `已开始 ${clock}`, cls: 'overdue' };
+
+  // 提醒任务没有黄色档，这里的 cls 只用来标「已开始」，临开始也不染黄
+  const min = Math.round(diff / 60000);
+  if (min < 60) return { text: `${min} 分钟后开始`, cls: '' };
+  const h = min / 60;
+  if (h < 12) return { text: `${Math.round(h)} 小时后开始`, cls: '' };
+  if (h < 48) return { text: `明天 ${clock} 开始`, cls: '' };
+  return { text: `${Math.round(h / 24)} 天后开始`, cls: '' };
 }
 
 function dueInfo(due) {
@@ -265,16 +311,30 @@ function fmtSize(n) {
   return (n / 1024 / 1024).toFixed(2) + ' MB';
 }
 
+// 提醒任务没有独立的截止：开始 + 持续时间（没填按 1 小时）就是它的截止时刻，
+// 其他任务按这个时刻给它预留时间。和悬浮清单、服务端同一套算法。
+function dueOfRemind(start, estimate) {
+  const dt = parseDue(start);
+  if (!dt) return null;
+  const est = Number(estimate) > 0 ? Number(estimate) : 60;
+  const d = new Date(dt.getTime() + est * 60000);
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}` +
+         `T${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+
 function normalize(t) {
   const src = (t && typeof t === 'object' && !Array.isArray(t)) ? t : {};
-  const due = normalizeDue(src.due);
+  const remind = src.TaskType === 'remind';
+  const estimate = Number.isFinite(Number(src.estimate)) && Number(src.estimate) > 0
+    ? Math.min(Math.round(Number(src.estimate) * 60) / 60, EST_MAX)
+    : 0;                        // 0 = 不设预估，只当提醒用；算紧急度时才按 1 小时算
+  const start = remind ? (normalizeDue(src.Start) || '') : '';
+  const due = remind ? dueOfRemind(start, estimate) : normalizeDue(src.due);
   return {
     id: src.id || uid(),
     title: String(src.title || '').slice(0, 500),
     done: !!src.done,
-    estimate: Number.isFinite(Number(src.estimate)) && Number(src.estimate) > 0
-      ? Math.min(Math.round(Number(src.estimate) * 60) / 60, EST_MAX)
-      : 0,                      // 0 = 不设预估，只当提醒用；算紧急度时才按 1 小时算
+    estimate,
     due,
     tags: Array.isArray(src.tags) ? src.tags.filter((x) => typeof x === 'string').slice(0, 6) : [],
     links: Array.isArray(src.links)
@@ -284,6 +344,12 @@ function normalize(t) {
       ? Number(src.startedAt)
       : 0,
     pinned: !!src.pinned,
+    // 任务类型：缺字段按过程任务，和没有这两个标签的老数据一致
+    TaskType: remind ? 'remind' : 'process',
+    Start: start,
+    Advance: remind && Number.isFinite(Number(src.Advance)) && Number(src.Advance) > 0
+      ? Math.min(Math.round(Number(src.Advance)), 99999)
+      : 0,
     // 无截止时间的重复任务无法生成下一期；导入数据也按同一规则清除重复设置
     repeat: due && REPEATS.some((r) => r.key === src.repeat) ? src.repeat : '',
     // 循环锚点必须原样带回去：控制台不认这个字段的话，任何一次保存都会让服务端重锚
@@ -555,6 +621,7 @@ const RING_C = 2 * Math.PI * 9;      // 半径 9 的周长
 
 // 进行中：常显“停止”按钮；未进行：悬停时显示“正在进行”按钮
 function startButton(t) {
+  if (t.TaskType === 'remind') return '';   // 提醒任务不关心何时结束，没有计时这回事
   const urg = urgencyOf(t);
   const id = esc(t.id);
   if (t.startedAt) {
@@ -580,7 +647,7 @@ function urgencyCls(t) {
 // 行顶那条直进度条。颜色按“用时占比”分档：<=60% 绿，<=80% 黄，再往上红。
 // 未填写预估时长时固定填充 80%，颜色按紧急程度确定。
 function progressBar(t) {
-  if (!t.startedAt) return '';
+  if (!t.startedAt || t.TaskType === 'remind') return '';
   const id = esc(t.id);
   if (!hasEstimate(t)) {
     return `<div class="task-progress ${urgencyCls(t)}" data-bar="${id}">
@@ -610,14 +677,21 @@ function repeatLabel(key) {
 }
 
 function taskHTML(t) {
-  const di = dueInfo(t.due);
+  const remind = t.TaskType === 'remind';
+  const di = remind ? remindInfo(t.Start) : dueInfo(t.due);
   const urg = urgencyOf(t);
   const urgCls = urg === 2 ? ' urgent' : (urg === 1 ? ' urgent-y' : '');
   const id = esc(t.id);
   const meta = [];
-  meta.push(t.estimate
-    ? `<span class="m-est">约 ${esc(fmtDuration(t.estimate))}</span>`
-    : '<span class="m-est">不限时</span>');
+  if (remind) {
+    // 持续时间只为别的任务预留时间；没填就按 1 小时算，但不必写出来
+    meta.push('<span class="m-rep">提醒</span>');
+    if (t.estimate) meta.push(`<span class="m-est">持续 ${esc(fmtDuration(t.estimate))}</span>`);
+  } else {
+    meta.push(t.estimate
+      ? `<span class="m-est">约 ${esc(fmtDuration(t.estimate))}</span>`
+      : '<span class="m-est">不限时</span>');
+  }
   if (di) meta.push(`<span class="m-due ${di.cls}">${esc(di.text)}</span>`);
   if (t.repeat) meta.push(`<span class="m-rep">${esc(repeatLabel(t.repeat))}</span>`);
   for (const tag of t.tags) meta.push(`<span class="m-tag">${esc(tag)}</span>`);
@@ -854,7 +928,7 @@ function parseYmd(s) {
 
 // 与任务列表使用相同日期显示格式：今天 / 明天 / 后天 / N 天后 / 月日
 function dueLabelText() {
-  if (!state.dueDate) return '截止时间';
+  if (!state.dueDate) return state.taskType === 'remind' ? '开始时间' : '截止时间';
 
   const d = parseYmd(state.dueDate);
   const clock = state.dueTime || '23:59';
@@ -871,6 +945,29 @@ function dueLabelText() {
 
   const year = d.getFullYear() === today.getFullYear() ? '' : `${d.getFullYear()}年`;
   return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${clock}`;
+}
+
+// 类型切换：提醒任务的时间栏说的是「开始」，并且多出「提前提醒」那一格
+function syncTypeUI() {
+  const remind = state.taskType === 'remind';
+  if (el.typeLabel) el.typeLabel.textContent = remind ? '提醒' : '过程';
+  if (el.typePop) {
+    el.typePop.querySelectorAll('.type-item').forEach((b) => {
+      b.classList.toggle('is-on', (b.dataset.type === 'remind') === remind);
+    });
+  }
+  if (el.dueField) el.dueField.title = remind ? '开始时间，可留空' : '截止时间，可留空';
+  if (el.advField) el.advField.hidden = !remind;
+  if (el.advInput && remind) el.advInput.value = String(state.advance || 0);
+  syncDue();
+}
+
+// 类型下拉的开合。原生 select 的弹层由系统绘制，深色主题下会露出白底蓝框
+function openTypePop(open) {
+  if (!el.typePop) return;
+  el.typePop.hidden = !open;
+  if (el.typeField) el.typeField.classList.toggle('is-open', open);
+  if (el.typeBtn) el.typeBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
 function syncDue() {
@@ -1124,11 +1221,17 @@ function addTask() {
     el.taskInput.focus();
     return;
   }
+  const remind = state.taskType === 'remind';
+  const when = state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null;
   const t = normalize({
     id: uid(),
     title,
+    TaskType: remind ? 'remind' : 'process',
+    Start: remind ? when : '',
+    Advance: remind ? Math.max(0, Math.min(99999,
+      Math.round(Number(el.advInput ? el.advInput.value : 0) || 0))) : 0,
     estimate: state.estimate,                // 0 = 不设预估
-    due: state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null,
+    due: remind ? null : when,
     tags: parseTags(el.tagInput.value),
     links: state.links.slice(),
     repeat: state.repeat,
@@ -1245,6 +1348,8 @@ function openTaskEditor(id) {
   editor.draft = {
     dueDate: state.dueDate,
     dueTime: state.dueTime,
+    taskType: state.taskType,
+    advance: state.advance,
     links: state.links.slice(),
     estimate: state.estimate,
     estRaw,
@@ -1255,10 +1360,14 @@ function openTaskEditor(id) {
   };
   if (el.linkInput) el.linkInput.value = '';
 
-  // 任务的值灌进共用控件
-  const due = typeof t.due === 'string' ? t.due : '';
-  state.dueDate = due ? due.slice(0, 10) : '';
-  state.dueTime = due.length >= 16 ? due.slice(11, 16) : '23:59';
+  // 任务的值灌进共用控件。提醒任务填的是开始时刻，不是截止
+  state.taskType = t.TaskType === 'remind' ? 'remind' : 'process';
+  state.advance = Number(t.Advance) || 0;
+  const when = state.taskType === 'remind'
+    ? (typeof t.Start === 'string' ? t.Start : '')
+    : (typeof t.due === 'string' ? t.due : '');
+  state.dueDate = when ? when.slice(0, 10) : '';
+  state.dueTime = when.length >= 16 ? when.slice(11, 16) : '23:59';
   state.links = (t.links || []).map(normalizeLink).filter(Boolean);
   state.estimate = Number(t.estimate) > 0 ? Number(t.estimate) : 0;
   estUnit = state.estimate && state.estimate % 1440 === 0 ? 0
@@ -1267,9 +1376,11 @@ function openTaskEditor(id) {
   estTyped = false;                  // 编辑面板里是回填值，换单位要换算
 
   paintEst();
-  syncDue();
+  syncTypeUI();
   renderLinkChips();
 
+  el.editFields.appendChild(el.typeField);
+  el.editFields.appendChild(el.advField);
   el.editFields.appendChild(el.estField);
   el.editFields.appendChild(el.dueField);
   el.editFields.appendChild(el.linkField);
@@ -1287,7 +1398,10 @@ function closeTaskEditor() {
   editor.id = null;
 
   // 控件放回输入区，顺序与原布局一致
+  // 顺序有讲究：estField 还在弹窗里时不能拿它当参照，先把 estField 挪回来
   el.composerMeta.insertBefore(el.estField, el.tagsField);
+  el.composerMeta.insertBefore(el.typeField, el.estField);
+  el.composerMeta.insertBefore(el.advField, el.estField);
   el.composerMeta.insertBefore(el.dueField, el.tagsField);
   el.composerMeta.insertBefore(el.linkField, el.tagsField);
   el.composer.appendChild(el.linkChips);
@@ -1298,6 +1412,8 @@ function closeTaskEditor() {
     state.dueTime = d.dueTime;
     state.links = d.links;
     state.estimate = d.estimate || 0;
+    state.taskType = d.taskType || 'process';
+    state.advance = d.advance || 0;
     estRaw = d.estRaw;
     estUnit = d.estUnit;
     // 输入框是弹窗和输入区共用的，不清空的话弹窗里敲的网址会留在「添加任务」那一栏
@@ -1310,7 +1426,7 @@ function closeTaskEditor() {
   editor.draft = null;
 
   paintEst();
-  syncDue();
+  syncTypeUI();
   renderLinkChips();
 }
 
@@ -1338,9 +1454,15 @@ function saveTaskEditor() {
     }
   }
 
+  const remind = state.taskType === 'remind';
+  const when = state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null;
   t.title = title.slice(0, 500);
-  t.due = state.dueDate ? `${state.dueDate}T${state.dueTime || '23:59'}` : null;
+  t.TaskType = remind ? 'remind' : 'process';
+  t.Start = remind ? (when || '') : '';
+  t.Advance = remind ? Math.max(0, Math.min(99999, Math.round(Number(el.advInput ? el.advInput.value : 0) || 0))) : 0;
   t.estimate = state.estimate || 0;
+  // 提醒任务的截止由开始 + 持续时间推出来，和 normalize 同一套算法
+  t.due = remind ? dueOfRemind(t.Start, t.estimate) : when;
   t.links = state.links.slice();
 
   closeTaskEditor();
@@ -1705,6 +1827,31 @@ function bind() {
   });
 
   // 截止时间面板
+  if (el.typeBtn) {
+    el.typeBtn.addEventListener('mousedown', (e) => e.preventDefault());   // 别把输入框顶失焦
+    el.typeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openTypePop(el.typePop.hidden);
+    });
+  }
+  // 点图标或「过程」两个字也算打开，不必对准按钮
+  if (el.typeField) {
+    el.typeField.addEventListener('click', (e) => {
+      if (el.typePop && el.typePop.contains(e.target)) return;
+      openTypePop(el.typePop.hidden);
+    });
+  }
+  if (el.typePop) {
+    el.typePop.addEventListener('mousedown', (e) => e.preventDefault());
+    el.typePop.addEventListener('click', (e) => {
+      const b = e.target.closest('.type-item');
+      if (!b) return;
+      state.taskType = b.dataset.type === 'remind' ? 'remind' : 'process';
+      openTypePop(false);
+      syncTypeUI();
+    });
+  }
+
   el.dueBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     openDuePop(el.duePop.hidden);
@@ -1757,6 +1904,11 @@ function bind() {
   document.addEventListener('click', (e) => {
     if (!el.dueField.contains(e.target)) openDuePop(false);
     // 选择来源的菜单：单击其他区域时收起
+    // 整格都算「里面」：点图标或文字也会 toggle，不能在这里又关掉
+    if (el.typePop && !el.typePop.hidden && !el.typeField.contains(e.target)) {
+      openTypePop(false);
+    }
+
     if (el.pickPop && !el.pickPop.hidden
         && !el.pickPop.contains(e.target) && !el.btnPick.contains(e.target)) {
       el.pickPop.hidden = true;
@@ -1978,6 +2130,7 @@ function bind() {
       el.searchInput.focus();
     }
     if (e.key === 'Escape') {
+      if (el.typePop && !el.typePop.hidden) { openTypePop(false); return; }
       if (!el.duePop.hidden) { openDuePop(false); return; }
       if (!el.sheetMask.hidden) { closeSheet(); return; }
       if (state.query) {
@@ -2019,7 +2172,7 @@ async function init() {
 
   bind();
   setEstimate(60);
-  syncDue();
+  syncTypeUI();
   paintRepeatChips();      // HTML 里写死的 is-on 也要补上 aria-pressed
   await loadTasks();
   render();

@@ -15,8 +15,8 @@ static const int LIST_TOP    = TITLE_H;
 static const int LIST_BOTTOM = CARD_H - FOOT_H;
 static const int VISIBLE_ROWS = (LIST_BOTTOM - LIST_TOP) / ROW_H;   // 6
 
-// 就地添加时从底部拉出来的面板：输入框 + 截止 / 预估两排选项
-static const int PANEL_H = 138;
+// 就地添加时从底部拉出来的面板：输入框 + 类型 / 时间 / 预估三排选项
+static const int PANEL_H = 168;
 static const int CHIP_H  = 24;
 
 static const UINT_PTR TIMER_REFRESH  = 1;

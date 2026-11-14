@@ -96,6 +96,7 @@ struct DueBucket {
     long long prefix;     // 到这一档为止的累计（长任务已减半）
     long long redLine;    // 这一档里最长的红色线：max(min(预估, 12h))
     int       tier;       // 第三次遍历定下的等级：0 普通 / 1 黄 / 2 红
+    bool      hasProcess; // 这一档里有过程任务；只有提醒任务的档不参与黄线判定
 };
 
 static std::vector<DueBucket> g_buckets;
@@ -113,15 +114,21 @@ static void rebuildWorkload() {
 
     std::map<long long, long long> byDue;     // 截止时刻 → 有效预估和（长任务已减半）
     std::map<long long, long long> redByDue;  // 截止时刻 → 最长的红色线
+    std::map<long long, bool> procByDue;      // 截止时刻 → 这一档有没有过程任务
     for (size_t i = 0; i < g_tasks.size(); ++i) {
         const Task& t = g_tasks[i];
         if (t.dueMs <= 0) continue;                          // 没截止时间排不进去
 
         long long est = (long long)t.estimate * 60000LL;
         if (est <= 0) est = 3600000LL;                       // 没填预估按 1 小时
-        long long red = est + URG_RED_GRACE_MS;
-        if (red > URG_RED_CAP_MS) red = URG_RED_CAP_MS;
-        if (red > redByDue[t.dueMs]) redByDue[t.dueMs] = red;
+        // 提醒任务的红色线是「提前提醒」，与预估无关，不参与这一档的取大；
+        // 它的预估照样计入前缀和，那段时间确实被占着
+        if (t.type != 1) {
+            long long red = est + URG_RED_GRACE_MS;
+            if (red > URG_RED_CAP_MS) red = URG_RED_CAP_MS;
+            if (red > redByDue[t.dueMs]) redByDue[t.dueMs] = red;
+            procByDue[t.dueMs] = true;
+        }
         if (est >= EST_LONG_MS) est /= 2;
         byDue[t.dueMs] += est;
     }
@@ -137,16 +144,25 @@ static void rebuildWorkload() {
         b.prefix = cum;
         b.redLine = redByDue[it->first];
         b.tier = 0;
+        b.hasProcess = procByDue[it->first];
         g_buckets.push_back(b);
     }
 
     // 第三遍：倒序把更晚那一档的等级往回带。
     // 不这么传会出现「两天的活已经标红，明天到期的五分钟任务还是普通」这种反直觉结果：
     // 更早到期的任务不可能比更晚到期的更闲。
+    // 只有提醒任务的档不在这里定级：它的紧急度按「开始时刻减提前量」单独算，
+    // 拿负载黄线去套它没有意义，还会把黄色传给更早的过程任务。
+    // carry 不更新，更早的档照常继承更晚那一档的等级。
     long long now = nowMs();
     int carry = 0;
     for (int i = (int)g_buckets.size() - 1; i >= 0; --i) {
         DueBucket& b = g_buckets[i];
+        if (!b.hasProcess) {
+            b.tier = 0;
+            continue;
+        }
+
         long long line = b.prefix * (b.prefix >= DAY_CAP_MS ? 2 : 1);
         if (line < URG_YELLOW_FLOOR_MS) line = URG_YELLOW_FLOOR_MS;
 
@@ -163,6 +179,15 @@ static void rebuildWorkload() {
 
 // 这条任务的等级：第三次遍历已经按截止时刻定好，这里只查表
 static Urgency urgencyOf(const Task& t) {
+    // 提醒任务只关心「什么时候开始」：没有黄色档，只有红和不急两种。
+    // 红色线就是用户填的提前提醒分钟数，没填按 0——到点才红。
+    if (t.type == 1) {
+        if (t.startMs <= 0) return URG_NONE;
+        long long remain = t.startMs - nowMs();
+        long long adv = (long long)t.advanceMin * 60000LL;
+        return (remain <= adv) ? URG_RED : URG_NONE;
+    }
+
     if (t.dueMs <= 0) return URG_NONE;
 
     size_t lo = 0, hi = g_buckets.size();
@@ -290,11 +315,15 @@ static void msToLocal(long long ms, SYSTEMTIME& st) {
 }
 
 // 任务行右侧那一小段时间文字
+// 提醒任务看的是开始时刻：它什么时候开始，比什么时候结束更值得显示
 static wstring dueText(const Task& t) {
-    if (t.dueMs <= 0) return L"";
-    long long remain = t.dueMs - nowMs();
+    const bool remind = (t.type == 1);
+    long long when = remind ? t.startMs : t.dueMs;
+    if (when <= 0) return L"";
+    long long remain = when - nowMs();
 
     if (remain <= 0) {
+        if (remind) return L"已开始";
         long long overMin = (-remain) / 60000LL;
         if (overMin < 60) return L"逾期";
         long long overH = overMin / 60;
@@ -303,15 +332,15 @@ static wstring dueText(const Task& t) {
     }
 
     long long min = remain / 60000LL;
-    if (min < 60) return std::to_wstring(min) + L"min";
+    if (min < 60) return std::to_wstring(min) + (remind ? L"min 后开始" : L"min");
     long long h = min / 60;
-    if (h < 24) return std::to_wstring(h) + L"h";
+    if (h < 24) return std::to_wstring(h) + (remind ? L"h 后开始" : L"h");
 
     SYSTEMTIME st{};
-    msToLocal(t.dueMs, st);
+    msToLocal(when, st);
     long long d = h / 24;
-    if (d < 7) return std::to_wstring(d) + L"d";
-    return std::to_wstring(st.wMonth) + L"/" + std::to_wstring(st.wDay);
+    if (d < 7) return std::to_wstring(d) + (remind ? L"d 后开始" : L"d");
+    return std::to_wstring(st.wMonth) + L"/" + std::to_wstring(st.wDay) + (remind ? L" 开始" : L"");
 }
 
 // 量一段文字在 96 DPI 逻辑坐标下的宽度，用来决定横条该多宽

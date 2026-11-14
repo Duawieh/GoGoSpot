@@ -8,6 +8,9 @@ struct Task {
     std::vector<wstring> links; // 关联材料：可以挂多个链接或本地文件
     long long startedAt = 0;    // 正在进行：计时开始时刻，0 表示没在进行
     bool pinned = false;        // 置顶：排在最前面，和控制台共用
+    int  type = 0;              // 0 过程任务（结束时提醒） / 1 提醒任务（开始时提醒，不能计时）
+    long long startMs = 0;      // 提醒任务的开始时刻；过程任务不用
+    int  advanceMin = 0;        // 提醒任务的提前提醒分钟数，红色线就是它
 };
 
 static std::vector<Task> g_tasks;
@@ -182,6 +185,12 @@ static const wchar_t* EST_LABEL[5] = { L"30分", L"1时", L"2时", L"自定义",
 static const int    EST_CHIPS = 5;
 static const int    EST_CUSTOM = 3;          // “自定义”那一格的下标
 static const wchar_t* DUE_LABEL[5] = { L"今天", L"明天", L"后天", L"自定义", L"不设" };
+
+// 任务类型：过程任务在结束时提醒、可计时；提醒任务在开始时提醒、不可计时。
+// 不选就是过程任务，和没有 TaskType 字段的老数据一致。
+static int g_editType = 0;
+static const wchar_t* TYPE_LABEL[2] = { L"过程", L"提醒" };
+static const int TYPE_CHIPS = 2;
 
 // 任务标记完成后，该行向右滑出并淡出，后续任务行依次补位。
 // g_leaveRow 是它在新列表里原来的位置。
