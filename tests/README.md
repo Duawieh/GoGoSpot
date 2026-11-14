@@ -27,6 +27,7 @@ node tests/console2.js
 node tests/console3.js
 node tests/console-estimate.js  # 不设预估：不限时、负载兜底、编辑回填
 node tests/console-remind.js    # 提醒任务：类型下拉、开始时间、提前提醒、无计时按钮
+node tests/console-tier.js      # 定级：纯提醒档不亮黄、不传等级，但预估仍占前缀和
 node tests/est-unit.js          # 预估单位切换
 node tests/shots-readme.js      # 重新生成 docs/ 里的 README 截图
 ```
