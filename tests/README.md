@@ -12,11 +12,12 @@ GoGoSpot.exe --port 8770 --data build\test\smoke\data\tasks.json --no-browser
 
 ```
 # 接口：正常路径、畸形输入、并发、备份、重复派生
-python tests/verify-fixes.py     # 逐条对应修复报告里的 P0 / P1
+python tests/verify-fixes.py     # 按历史 P0 / P1 编号分组（编号只作分组用）
 python tests/api_test.py
-python tests/api_test2.py
+python tests/api_test2.py        # 用裸 socket 补测协议层：HEAD 不读体、413、chunked、70KB 请求行
 python tests/boundary_test.py    # 边界值、锚点、主题三档，写死 8770
 python tests/estimate_test.py    # 预估「不设」：0 原样透传、往返、重复派生
+python tests/remind_test.py      # 提醒任务：due 派生、拒绝计时、推迟与重复派生跟着 Start 走
 python tests/backup_test.py      # 备份策略：普通写入不备份、连删只备一次（含 61 秒冷却等待）
 
 # 控制台（需要 playwright，装在托管 node 工作区）
@@ -25,19 +26,22 @@ node tests/console1.js
 node tests/console2.js
 node tests/console3.js
 node tests/console-estimate.js  # 不设预估：不限时、负载兜底、编辑回填
+node tests/console-remind.js    # 提醒任务：类型下拉、开始时间、提前提醒、无计时按钮
 node tests/est-unit.js          # 预估单位切换
 node tests/shots-readme.js      # 重新生成 docs/ 里的 README 截图
 ```
 
-`shots-readme.js` 只出控制台那两张。悬浮清单的图要用 `cap.exe` 单独抓：
-`w-dot.png`、`w-pill-urgent.png`、`w-pill-run.png` 抓好后合成折叠态配图。
+`shots-readme.js` 只出控制台那两张。悬浮清单的图要用 `cap.exe` 单独抓四张：
+`w-dot.png`（常规）、`w-dot-amber.png`（黄色外圈 + 内圈进度）、
+`w-pill-urgent.png`（紧急）、`w-pill-run.png`（进行中），抓好后合成折叠态配图。
 
 ```
 python tests/compose-widget-states.py <截图目录>
 ```
 
-端口默认 8770：四个 Python 脚本读 `GOGOSPOT_PORT`，控制台脚本读 `GOGOSPOT_BASE`
-（默认 `http://127.0.0.1:8770/`）。要换端口改这两个变量，别改回 8765。
+端口默认 8770：`api_test.py`、`api_test2.py`、`verify-fixes.py` 三个读 `GOGOSPOT_PORT`，
+其余 Python 脚本和全部控制台脚本写死 8770 / `http://127.0.0.1:8770/`
+（控制台脚本可用 `GOGOSPOT_BASE` 覆盖）。要换端口改这些常量，别改回 8765。
 `boundary_test.py` 例外：端口写死 8770，且要求 `dataFile` 含 `build/test/boundary`，
 启动时用 `--data build\test\boundary\data\tasks.json`。
 

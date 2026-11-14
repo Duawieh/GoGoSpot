@@ -99,26 +99,30 @@ int wmain(int argc, wchar_t** argv) {
     ReleaseDC(nullptr, screen);
     if (!ok) { wprintf(L"抓图失败\n"); return 1; }
 
-    Bitmap src(hbmp, nullptr);
-    int scale = (argc >= 6) ? _wtoi(argv[5]) : 1;
-    if (scale < 1) scale = 1;
-
+    // GDI+ 对象必须全部析构后才能 GdiplusShutdown，
+    // 否则 Bitmap 析构会去访问已经卸载的 GDI+ 状态，进程退出时崩一次
     CLSID clsid;
     Status st = GenericError;
-    if (pngClsid(&clsid) < 0) {
-        wprintf(L"没有 PNG 编码器\n");
-    } else if (scale == 1) {
-        st = src.Save(argv[2], &clsid, nullptr);
-    } else {
-        // 圆点只有 70px，放大几倍才看得出呼吸的深浅
-        Bitmap big(w * scale, h * scale, PixelFormat32bppARGB);
-        Graphics og(&big);
-        og.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-        og.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-        og.DrawImage(&src, Rect(0, 0, w * scale, h * scale), 0, 0, w, h, UnitPixel);
-        st = big.Save(argv[2], &clsid, nullptr);
+    {
+        Bitmap src(hbmp, nullptr);
+        int scale = (argc >= 6) ? _wtoi(argv[5]) : 1;
+        if (scale < 1) scale = 1;
+
+        if (pngClsid(&clsid) < 0) {
+            wprintf(L"没有 PNG 编码器\n");
+        } else if (scale == 1) {
+            st = src.Save(argv[2], &clsid, nullptr);
+        } else {
+            // 圆点只有 70px，放大几倍才看得出呼吸的深浅
+            Bitmap big(w * scale, h * scale, PixelFormat32bppARGB);
+            Graphics og(&big);
+            og.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            og.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+            og.DrawImage(&src, Rect(0, 0, w * scale, h * scale), 0, 0, w, h, UnitPixel);
+            st = big.Save(argv[2], &clsid, nullptr);
+        }
+        wprintf(L"%s %dx%d -> %s\n", st == Ok ? L"OK" : L"FAIL", w, h, argv[2]);
     }
-    wprintf(L"%s %dx%d -> %s\n", st == Ok ? L"OK" : L"FAIL", w, h, argv[2]);
 
     DeleteObject(hbmp);
     GdiplusShutdown(token);

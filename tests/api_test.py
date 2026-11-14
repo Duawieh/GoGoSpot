@@ -82,7 +82,7 @@ check('add 后字段齐全', t0['title'] == '写报告' and t0['estimate'] == 60
 
 s, h, d = req('GET', '/api/widget')
 line = text(d).splitlines()[1].split('\t')
-check('widget 行 8 列（末列是置顶）', len(line) == 8, repr(line))
+check('widget 行 11 列（置顶 / 类型 / 开始 / 提前提醒）', len(line) == 11, repr(line))
 check('widget 链接用竖线拼接', line[5].count('|') == 1, line[5])
 check('widget 标题正确', line[4] == '写报告', line[4])
 
@@ -119,7 +119,7 @@ put_tasks([task(0)])   # 上面故意写坏了，重置回可用状态
 s, h, d = req('POST', '/api/add?' + urllib.parse.urlencode({'title': 'a\tb\nc\rd'}))
 s2, h2, d2 = req('GET', '/api/widget')
 last = text(d2).splitlines()[-1].split('\t')
-check('标题里的制表/换行不破坏 widget 协议', len(last) == 8, '列数=%d' % len(last))
+check('标题里的制表/换行不破坏 widget 协议', len(last) == 11, '列数=%d' % len(last))
 
 # estimate 边界
 for est, want in [(-5, 0), (0, 0), (99999, 99999), (200000, 99999), ('abc', 0)]:

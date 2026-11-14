@@ -225,7 +225,29 @@ print("\n== 20. 健康检查 ==")
 status, body = req("GET", "/api/health")
 t("health 200", status == 200, f"got {status}")
 health = json.loads(body)
-t("health version=1.0.8", health.get("version") == "1.0.8", str(health)[:200])
+
+# 版本号不写死：从 src/app.h 读，发版改那一处就够，测试不用跟着改。
+# 读不到源码（脚本被单独拷走）时退回只校验格式。
+want_ver = ""
+try:
+    apph = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "app.h")
+    with open(apph, encoding="utf-8") as f:
+        for ln in f:
+            if "GOGOSPOT_VERSION" in ln:
+                parts = ln.split('"')
+                if len(parts) >= 2:
+                    want_ver = parts[1]
+                break
+except OSError:
+    pass
+
+if want_ver:
+    t(f"health version 与 app.h 一致({want_ver})",
+      health.get("version") == want_ver, str(health)[:200])
+else:
+    import re
+    t("health version 是三段数字",
+      bool(re.fullmatch(r"\d+\.\d+\.\d+", str(health.get("version", "")))), str(health)[:200])
 
 # ---- 21. 置顶切换 ----
 print("\n== 21. 置顶切换 ==")
